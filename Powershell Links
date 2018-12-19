@@ -8,9 +8,6 @@ https://blogs.msdn.microsoft.com/joscot/2016/04/28/updating-multiple-sql-instanc
 
 Update multiple SQL Server systems with PowerShell
 
-
-
-
 https://4sysops.com/archives/update-multiple-sql-server-systems-with-powershell/
 
 
@@ -18,3 +15,10 @@ Running SQL Scripts Against Multiple Servers Using PowerShell
 
 
 https://tracyboggiano.com/archive/2017/04/query-multipleservers/
+
+https://www.red-gate.com/simple-talk/sql/database-administration/what-is-sqlpsx/
+
+
+Deploy SQL Server in Kubernetes
+
+http://www.centinosystems.com/blog/sql/deploying-sql-server-in-kubernetes/

@@ -1,0 +1,46 @@
+USE [master]
+GO
+
+/****** Object:  Login [BUILTIN\Administrators]    Script Date: 9/20/2017 12:07:55 PM ******/
+DROP LOGIN [BUILTIN\Administrators]
+GO
+
+
+USE [msdb]
+GO
+EXEC msdb.dbo.sp_set_sqlagent_properties @email_save_in_sent_folder=1, 
+		@databasemail_profile=N'Database Mail', 
+		@use_databasemail=1
+GO
+
+USE [msdb]
+GO
+EXEC msdb.dbo.sp_update_job @job_name=N'DatabaseBackup - SYSTEM_DATABASES - FULL', 
+		@notify_level_email=2, 
+		@notify_level_page=2, 
+		@notify_email_operator_name=N'SQLServerDBA'
+GO
+EXEC msdb.dbo.sp_update_job @job_name=N'DatabaseBackup - USER_DATABASES - DIFF', 
+		@notify_level_email=2, 
+		@notify_level_page=2, 
+		@notify_email_operator_name=N'SQLServerDBA'
+GO
+EXEC msdb.dbo.sp_update_job @job_name=N'DatabaseBackup - USER_DATABASES - FULL', 
+		@notify_level_email=2, 
+		@notify_level_page=2, 
+		@notify_email_operator_name=N'SQLServerDBA'
+GO
+EXEC msdb.dbo.sp_update_job @job_name=N'DatabaseBackup - USER_DATABASES - LOG', 
+		@notify_level_email=2, 
+		@notify_level_page=2, 
+		@notify_email_operator_name=N'SQLServerDBA'
+GO
+
+
+-- STOP SQL Server Agent
+EXEC xp_servicecontrol N'STOP',N'SQLServerAGENT' 
+GO
+
+-- START SQL Server Agent
+EXEC xp_servicecontrol N'START',N'SQLServerAGENT' 
+GO 

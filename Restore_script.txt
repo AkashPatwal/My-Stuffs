@@ -1,0 +1,278 @@
+RESTORE DATABASE [Archive_Tables]
+FROM DISK = 'F:\Userbackup\Archive_Tables.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Archive_Tables_Data' TO 'D:\SQLData\Archive_Tables.MDF', 
+MOVE 'Archive_Tables_Log' TO 'E:\SQLLog\Archive_Tables_1.LDF'
+GO
+RESTORE DATABASE [cf_client_vars_MX]
+FROM DISK = 'F:\Userbackup\cf_client_vars_MX.bak'
+WITH stats = 1, NoRecovery
+MOVE 'cf_client_vars_MX_Data' TO 'D:\SQLData\cf_client_vars_MX.MDF', 
+MOVE 'cf_client_vars_MX_Log' TO 'E:\SQLLog\cf_client_vars_MX_1.LDF'
+GO
+RESTORE DATABASE [Control_Center]
+FROM DISK = 'F:\Userbackup\Control_Center.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Control_Center_Data' TO 'D:\SQLData\Control_Center.MDF', 
+MOVE 'Control_Center_Log' TO 'E:\SQLLog\Control_Center_1.LDF'
+GO
+RESTORE DATABASE [msdb_old]
+FROM DISK = 'F:\Userbackup\msdb_old.bak'
+WITH stats = 1, NoRecovery
+MOVE 'MSDBData' TO 'D:\SQLData\MSDBData_old.mdf', 
+MOVE 'MSDBLog' TO 'E:\SQLLog\MSDBLog_old.ldf'
+GO
+RESTORE DATABASE [ngauge]
+FROM DISK = 'F:\Userbackup\ngauge.bak'
+WITH stats = 1, NoRecovery
+MOVE 'New_Timekeeping_Data' TO 'D:\SQLData\ngauge.MDF', 
+MOVE 'New_Timekeeping_Log' TO 'E:\SQLLog\ngauge_1.LDF'
+GO
+RESTORE DATABASE [Nucleus_CVG_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_CVG_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_cvg_Claim_Data' TO 'D:\SQLData\Nucleus_CVG_Claim.MDF', 
+MOVE 'Nucleus_CVG_Claim_Log' TO 'E:\SQLLog\Nucleus_CVG_Claim_1.LDF'
+GO
+RESTORE DATABASE [Nucleus_CVG_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_CVG_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Reporting_dat' TO 'D:\SQLData\Nucleus_CVG_Reporting_dat.mdf', 
+MOVE 'Nucleus_CVG_Reporting_log' TO 'E:\SQLLog\Nucleus_CVG_Reporting_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVG_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_CVG_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Security_Data' TO 'D:\SQLData\Nucleus_CVG_Security_Data.mdf', 
+MOVE 'Nucleus_CVG_Security_Log' TO 'E:\SQLLog\Nucleus_CVG_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVG_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_CVG_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Trans_Data' TO 'D:\SQLData\Nucleus_CVG_Trans_Data.mdf', 
+MOVE 'Nucleus_CVG_Trans_Log' TO 'E:\SQLLog\Nucleus_CVG_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVG_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_CVG_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_UsersGuide_dat' TO 'D:\SQLData\Nucleus_CVG_UsersGuide_dat.mdf', 
+MOVE 'Nucleus_CVG_UsersGuide_log' TO 'E:\SQLLog\Nucleus_CVG_UsersGuide_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVS_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_CVS_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Claim_Data' TO 'D:\SQLData\Nucleus_Tmobile_Claim_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Claim_Log' TO 'E:\SQLLog\Nucleus_Tmobile_Claim_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVS_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_CVS_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Reporting_Data' TO 'D:\SQLData\Nucleus_Tmobile_Reporting_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Reporting_Log' TO 'E:\SQLLog\Nucleus_Tmobile_Reporting_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVS_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_CVS_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Security_Data' TO 'D:\SQLData\Nucleus_Tmobile_Security_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Security_Log' TO 'E:\SQLLog\Nucleus_Tmobile_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_CVS_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_CVS_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Trans_Data' TO 'D:\SQLData\Nucleus_CVS_Trans.MDF', 
+MOVE 'Nucleus_Tmobile_Trans_Log' TO 'E:\SQLLog\Nucleus_CVS_Trans_1.LDF'
+GO
+RESTORE DATABASE [Nucleus_CVS_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_CVS_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Usersguide_Data' TO 'D:\SQLData\Nucleus_Tmobile_Usersguide_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Usersguide_Log' TO 'E:\SQLLog\Nucleus_Tmobile_Usersguide_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_DMA_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_DMA_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Claim_Data' TO 'D:\SQLData\Nucleus_DMA_Claim_Data.MDF', 
+MOVE 'Nucleus_DMA_Claim_Log' TO 'E:\SQLLog\Nucleus_DMA_Claim_Log.LDF'
+GO
+RESTORE DATABASE [Nucleus_DMA_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_DMA_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Test_DMA_Reporting_dat' TO 'D:\SQLData\Nucleus_DMA_Reporting.MDF', 
+MOVE 'Nucleus_Test_DMA_Reporting_log' TO 'E:\SQLLog\Nucleus_DMA_Reporting_1.LDF'
+GO
+RESTORE DATABASE [Nucleus_DMA_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_DMA_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_GE_Security_Data' TO 'D:\SQLData\Nucleus_GE_Security_Data.mdf', 
+MOVE 'Nucleus_GE_Security_Log' TO 'E:\SQLLog\Nucleus_GE_Security_Log.ldf',
+MOVE 'Nucleus_GE_Security_Audit_Data' TO 'D:\SQLData\Nucleus_GE_Security_Audit_Data.mdf'
+GO
+RESTORE DATABASE [Nucleus_DMA_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_DMA_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_GE_Trans_Data' TO 'D:\SQLData\Nucleus_GE_Trans_Data.mdf', 
+MOVE 'Nucleus_GE_Trans_Log' TO 'E:\SQLLog\Nucleus_GE_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_DMA_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_DMA_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_UsersGuide_dat' TO 'D:\SQLData\Nucleus_DMA_UsersGuide_dat.mdf', 
+MOVE 'Nucleus_DMA_UsersGuide_log' TO 'E:\SQLLog\Nucleus_DMA_UsersGuide_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_HRD_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_HRD_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_cvg_Claim_Data' TO 'D:\SQLData\Nucleus_HRD_Claim.mdf', 
+MOVE 'Nucleus_CVG_Claim_Log' TO 'E:\SQLLog\Nucleus_HRD_Claim_1.ldf'
+GO
+RESTORE DATABASE [Nucleus_HRD_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_HRD_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Reporting_dat' TO 'D:\SQLData\Nucleus_HRD_Reporting.mdf', 
+MOVE 'Nucleus_CVG_Reporting_log' TO 'E:\SQLLog\Nucleus_HRD_Reporting_1.ldf'
+GO
+RESTORE DATABASE [Nucleus_HRD_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_HRD_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Security_Data' TO 'D:\SQLData\Nucleus_HRD_Security_Data.mdf', 
+MOVE 'Nucleus_CVG_Security_Log' TO 'E:\SQLLog\Nucleus_HRD_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_HRD_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_HRD_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_Trans_Data' TO 'D:\SQLData\Nucleus_HRD_Trans_Data.mdf', 
+MOVE 'Nucleus_CVG_Trans_Log' TO 'E:\SQLLog\Nucleus_HRD_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_HRD_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_HRD_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_CVG_UsersGuide_dat' TO 'D:\SQLData\Nucleus_HRD_UsersGuide_dat.mdf', 
+MOVE 'Nucleus_CVG_UsersGuide_log' TO 'E:\SQLLog\Nucleus_HRD_UsersGuide_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_JPMC_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_JPMC_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Template_Claim' TO 'D:\SQLData\Nucleus_DMA_Template_Claim.mdf', 
+MOVE 'Nucleus_DMA_Template_Claim_log' TO 'E:\SQLLog\Nucleus_DMA_Template_Claim_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_JPMC_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_JPMC_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Template_Reporting' TO 'D:\SQLData\Nucleus_DMA_Template_Reporting.mdf', 
+MOVE 'Nucleus_DMA_Template_Reporting_log' TO 'E:\SQLLog\Nucleus_DMA_Template_Reporting_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_JPMC_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_JPMC_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Template_Security' TO 'D:\SQLData\Nucleus_DMA_Template_Security.mdf', 
+MOVE 'Nucleus_DMA_Template_Security_log' TO 'E:\SQLLog\Nucleus_DMA_Template_Security_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_JPMC_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_JPMC_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Template_Trans' TO 'D:\SQLData\Nucleus_DMA_Template_Trans.mdf', 
+MOVE 'Nucleus_DMA_Template_Trans_log' TO 'E:\SQLLog\Nucleus_DMA_Template_Trans_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_JPMC_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_JPMC_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_DMA_Template_UsersGuide' TO 'D:\SQLData\Nucleus_DMA_Template_UsersGuide.mdf', 
+MOVE 'Nucleus_DMA_Template_UsersGuide_log' TO 'E:\SQLLog\Nucleus_DMA_Template_UsersGuide_log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Medco_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_Medco_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Medco_Reporting_Data' TO 'D:\SQLData\Nucleus_Medco_Reporting_Data.mdf', 
+MOVE 'Nucleus_Medco_Reporting_Log' TO 'E:\SQLLog\Nucleus_Medco_Reporting_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Medco_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_Medco_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Medco_Security_Data' TO 'D:\SQLData\Nucleus_Medco_Security_Data.mdf', 
+MOVE 'Nucleus_Medco_Security_Log' TO 'E:\SQLLog\Nucleus_Medco_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Medco_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_Medco_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Medco_Trans_Data' TO 'D:\SQLData\Nucleus_Medco_Trans_Data.mdf', 
+MOVE 'Nucleus_Medco_Trans_Log' TO 'E:\SQLLog\Nucleus_Medco_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Medco_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_Medco_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Medco_UserGuide_Data' TO 'D:\SQLData\Nucleus_Medco_UserGuide_Data.mdf', 
+MOVE 'Nucleus_Medco_UserGuide_Log' TO 'E:\SQLLog\Nucleus_Medco_UserGuide_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Sears_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_Sears_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Claim_Data' TO 'D:\SQLData\Nucleus_Sears_Claim_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Claim_Log' TO 'E:\SQLLog\Nucleus_Sears_Claim_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Sears_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_Sears_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Reporting_Data' TO 'D:\SQLData\Nucleus_Sears_Reporting_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Reporting_Log' TO 'E:\SQLLog\Nucleus_Sears_Reporting_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Sears_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_Sears_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Security_Data' TO 'D:\SQLData\Nucleus_Sears_Security_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Security_Log' TO 'E:\SQLLog\Nucleus_Sears_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Sears_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_Sears_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Trans_Data' TO 'D:\SQLData\Nucleus_Sears_Trans_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Trans_Log' TO 'E:\SQLLog\Nucleus_Tmobile_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_Sears_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_Sears_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Usersguide_Data' TO 'D:\SQLData\Nucleus_Sears_Usersguide_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Usersguide_Log' TO 'E:\SQLLog\Nucleus_Sears_Usersguide_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_UPS_Claim]
+FROM DISK = 'F:\Userbackup\Nucleus_UPS_Claim.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Claim_Data' TO 'D:\SQLData\Nucleus_UPS_Claim_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Claim_Log' TO 'E:\SQLLog\Nucleus_UPS_Claim_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_UPS_Reporting]
+FROM DISK = 'F:\Userbackup\Nucleus_UPS_Reporting.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Reporting_Data' TO 'D:\SQLData\Nucleus_UPS_Reporting_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Reporting_Log' TO 'E:\SQLLog\Nucleus_UPS_Reporting_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_UPS_Security]
+FROM DISK = 'F:\Userbackup\Nucleus_UPS_Security.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Security_Data' TO 'D:\SQLData\Nucleus_UPS_Security_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Security_Log' TO 'E:\SQLLog\Nucleus_UPS_Security_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_UPS_Trans]
+FROM DISK = 'F:\Userbackup\Nucleus_UPS_Trans.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Trans_Data' TO 'D:\SQLData\Nucleus_UPS_Trans_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Trans_Log' TO 'E:\SQLLog\Nucleus_UPS_Trans_Log.ldf'
+GO
+RESTORE DATABASE [Nucleus_UPS_UsersGuide]
+FROM DISK = 'F:\Userbackup\Nucleus_UPS_UsersGuide.bak'
+WITH stats = 1, NoRecovery
+MOVE 'Nucleus_Tmobile_Usersguide_Data' TO 'D:\SQLData\Nucleus_UPS_Usersguide_Data.mdf', 
+MOVE 'Nucleus_Tmobile_Usersguide_Log' TO 'E:\SQLLog\Nucleus_UPS_Usersguide_Log.ldf'
+GO
+RESTORE DATABASE [UtilityDB]
+FROM DISK = 'F:\Userbackup\UtilityDB.bak'
+WITH stats = 1, NoRecovery
+MOVE 'UtilityDB' TO 'D:\SQLDATA\UtilityDB_Data.mdf', 
+MOVE 'UtilityDB_log' TO 'E:\SQLLog\UtilityDB_log.ldf'
+GO
+RESTORE DATABASE [Web_Perf_Stats]
+FROM DISK = 'F:\Userbackup\Web_Perf_Stats.bak'
+WITH stats = 1, NoRecovery
+MOVE 'web_perf_stats_Data' TO 'D:\SQLData\Web_Perf_Stats.MDF', 
+MOVE 'web_perf_stats_Log' TO 'E:\SQLLog\Web_Perf_Stats_1.LDF',
+MOVE 'web_perf_stats_1_Log' TO 'E:\SQLLog\Web_Perf_Stats_2.LDF'
+GO

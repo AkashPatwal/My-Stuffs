@@ -1,0 +1,175 @@
+USE [msdb]
+GO
+
+/****** Object:  Job [HA_latency_record]    Script Date: 11/1/2018 8:19:39 AM ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]]    Script Date: 11/1/2018 8:19:39 AM ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'HA_latency_record', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'No description available.', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Check for the Availability Replica]    Script Date: 11/1/2018 8:19:39 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Check for the Availability Replica', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=1, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'USE master
+GO
+DECLARE @ServerName NVARCHAR(256)  
+DECLARE @RoleDesc NVARCHAR(60), @Msg Varchar(2000),@AGGroupName Varchar(100)
+SELECT @AGGroupName = ''SRS-SiriusSQLAG'',@ServerName= @@SERVERNAME
+SET @ServerName=ltrim(rtrim(@ServerName))
+
+SET @AGGroupName=ltrim(rtrim(@AGGroupName))
+
+SELECT @RoleDesc =a.role_desc 
+    FROM sys.dm_hadr_availability_replica_states AS a
+    JOIN sys.availability_replicas AS b
+        ON b.replica_id = a.replica_id
+                JOIN sys.availability_groups AS c
+                                ON c.group_id=b.group_id
+WHERE b.replica_server_name = @ServerName
+                                AND c.name=@AGGroupName
+
+IF @RoleDesc = ''PRIMARY''
+BEGIN
+                SET @Msg=''AG GROUP:: ''+@AGGroupName+'' , Primary replica ::''+@ServerName 
+    print @Msg
+END
+ELSE
+BEGIN
+                                SET @Msg=''AG GROUP ::''+@AGGroupName+'' , Secondary replica ::''+@ServerName 
+                                RAISERROR(@Msg, 11, 1);
+END
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [record]    Script Date: 11/1/2018 8:19:39 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'record', 
+		@step_id=2, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N';WITH AG_Stats AS (
+            SELECT AGS.name                       AS AGGroupName, 
+                   AR.replica_server_name         AS InstanceName, 
+                   HARS.role_desc, 
+                   Db_name(DRS.database_id)       AS DBName, 
+                   DRS.database_id, 
+                   AR.availability_mode_desc      AS SyncMode, 
+                   DRS.synchronization_state_desc AS SyncState, 
+                   DRS.last_hardened_lsn, 
+                   DRS.end_of_log_lsn, 
+                   DRS.last_redone_lsn, 
+                   DRS.last_hardened_time, -- On a secondary database, time of the log-block identifier for the last hardened LSN (last_hardened_lsn).
+                   DRS.last_redone_time, -- Time when the last log record was redone on the secondary database.
+                   DRS.log_send_queue_size, 
+                   DRS.redo_queue_size,
+				   DRS.redo_queue_size/DRS.redo_rate AS RTO,
+                    --Time corresponding to the last commit record.
+                    --On the secondary database, this time is the same as on the primary database.
+                    --On the primary replica, each secondary database row displays the time that the secondary replica that hosts that secondary database 
+                    --   has reported back to the primary replica. The difference in time between the primary-database row and a given secondary-database 
+                    --   row represents approximately the recovery time objective (RPO), assuming that the redo process is caught up and that the progress 
+                    --   has been reported back to the primary replica by the secondary replica.
+                   DRS.last_commit_time
+            FROM   sys.dm_hadr_database_replica_states DRS 
+            LEFT JOIN sys.availability_replicas AR 
+            ON DRS.replica_id = AR.replica_id 
+            LEFT JOIN sys.availability_groups AGS 
+            ON AR.group_id = AGS.group_id 
+            LEFT JOIN sys.dm_hadr_availability_replica_states HARS ON AR.group_id = HARS.group_id 
+            AND AR.replica_id = HARS.replica_id 
+            ),
+    Pri_CommitTime AS 
+            (
+            SELECT *
+					--DBName
+     --           ,	last_commit_time
+            FROM    AG_Stats
+            WHERE   role_desc = ''PRIMARY''
+            ),
+    Rpt_CommitTime AS 
+            (
+            SELECT  * --DBName, last_commit_time
+            FROM    AG_Stats
+            WHERE   role_desc = ''SECONDARY'' --AND [InstanceName] = ''SRS-SQL1''
+            )
+INSERT INTO dbainfo..HA_Latency_record_dv
+SELECT --*,
+p.AGGroupName
+,p.[DBName] AS [DatabaseName], 
+p.last_commit_time AS [Primary_Last_Commit_Time]
+, r.SyncMode
+, r.SyncState
+    , r.last_commit_time AS [Reporting_Last_Commit_Time]
+    , DATEDIFF(ss,r.last_commit_time,p.last_commit_time) AS [Reporting_Sync_Lag_(secs)]
+    , r.last_commit_time AS [FailOver_Last_Commit_Time]
+    , DATEDIFF(ss,r.last_commit_time,p.last_commit_time) AS [FailOver_Sync_Lag_(secs)]
+	,r.log_send_queue_size [log_send_queue_size (KB)]
+	,r.redo_queue_size [redo_queue_size (KB)]
+	,r.RTO
+
+FROM Pri_CommitTime p
+LEFT JOIN Rpt_CommitTime r ON [r].[DBName] = [p].[DBName]
+
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'onetime', 
+		@enabled=0, 
+		@freq_type=8, 
+		@freq_interval=36, 
+		@freq_subday_type=4, 
+		@freq_subday_interval=5, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=1, 
+		@active_start_date=20151001, 
+		@active_end_date=20151009, 
+		@active_start_time=14500, 
+		@active_end_time=80000, 
+		@schedule_uid=N'3302fe7e-7208-4955-bfa0-a2ea346d6955'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+
+GO
+
+

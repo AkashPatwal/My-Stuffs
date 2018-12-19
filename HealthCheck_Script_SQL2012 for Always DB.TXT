@@ -1,0 +1,2629 @@
+/*
+ * (c) 2008 datAvail Corporation. 
+ * Property of datAvail Corporation. use, reuse or modification without prior written permission is prohibited. 
+ *
+ * Query Analyzer 2000 : Query to file/text Tools|Options|Results: width=900 no headings
+ * Query Analyzer 2005 : Query to file/text Query|Options|Results|Text: width=900 no headings
+ * SQLCmd/OSQL          : add options -h-1 -w 900 to command Line
+ * 
+
+DBs with different Collations will throw errors !
+select   name , DATABASEPROPERTYEX ( name, N'Collation' )
+from sys.databases
+where DATABASEPROPERTYEX ( name, N'Collation' )=DATABASEPROPERTYEX ('tempdb', N'Collation' )
+
+V4: handling single quote. by SKIPPING OBJets with Single quotes in it.
+	display ONE line per failed job.
+V4.1: taken care for Case sensitive servers; ready to use version.
+V4.2: skip the updateUsage if db size is above 100GB.
+	  include the systemDbs
+	  Fix the MIN server Memory for SQL2k5 bug.
+V4.3: addressed calculation of index fragmentation
+	  MISSING FULL/T-log backup (Full Backup : 1 wk, T-log 24hrs threshold)
+	  Correcting Version related hardcodings like SPAC etc.
+V4.3.1: Included code for SQL Error log checkup for Size.
+		older than 14 days OR if it is over 10MBin size (LogFileSizeBytes > 10485750)
+V4.3.3: Included code for VLF Count.
+		Included code for default Trace state
+		DBCC commands are appended “NO INFOMSGS”
+	MINOR CHANGES:
+		modified VLF code to exclude DB Snapshots
+		Changed the VLF count threshold from 50 to 1000.
+*/
+
+Use master;
+Set nocount on
+
+--CLEANING TEMP Tables related to HealthCheck.
+IF OBJECT_ID('tempdb.dbo.HealthCheckFixedDrives' ) IS NOT NULL DROP TABLE tempdb..HealthCheckFixedDrives
+IF OBJECT_ID('tempdb.dbo.HealthCheckLogSpace' ) IS NOT NULL DROP TABLE tempdb..HealthCheckLogSpace
+IF OBJECT_ID('tempdb.dbo.HealthCheckFileSpace' ) IS NOT NULL DROP TABLE tempdb..HealthCheckFileSpace
+IF OBJECT_ID('tempdb.dbo.HealthCheckTables' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTables
+IF OBJECT_ID('tempdb.dbo.HealthCheckTableRows' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTableRows
+IF OBJECT_ID('tempdb.dbo.HealthCheckIndexes' ) IS NOT NULL DROP TABLE tempdb..HealthCheckIndexes
+IF OBJECT_ID('tempdb.dbo.HealthCheckTableInfo' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTableInfo
+IF OBJECT_ID('tempdb.dbo.HealthCheckAudit' ) IS NOT NULL DROP TABLE tempdb..HealthCheckAudit
+IF OBJECT_ID('tempdb.dbo.HealthCheckDiskVolumes' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDiskVolumes
+IF OBJECT_ID('tempdb.dbo.HealthCheckCmdShell' ) IS NOT NULL DROP TABLE tempdb..HealthCheckCmdShell
+IF OBJECT_ID('tempdb.dbo.HealthCheckReport' ) IS NOT NULL DROP TABLE tempdb..HealthCheckReport
+IF OBJECT_ID('tempdb.dbo.HealthCheckDBOptions' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDBOptions
+IF OBJECT_ID('tempdb.dbo.HealthCheckDBOptionList' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDBOptionList
+IF OBJECT_ID('tempdb.dbo.HealthCheckConfiguration' ) IS NOT NULL DROP TABLE tempdb..HealthCheckConfiguration
+IF OBJECT_ID('tempdb.dbo.HealthCheckSysDatabases' ) IS NOT NULL DROP TABLE tempdb..HealthCheckSysDatabases
+IF OBJECT_ID('tempdb.dbo.HealthChecksp_helppublication' ) IS NOT NULL DROP TABLE tempdb..HealthChecksp_helppublication
+IF OBJECT_ID('tempdb.dbo.HealthCheckMSVer' ) IS NOT NULL DROP TABLE tempdb..HealthCheckMSVer
+
+declare  @cmd varchar(8000),@cmd21 varchar(8000),@size bigint <pMx8Gv}@5
+BEGIN TRY
+-----------------------------------------------------------------------
+--CHECK XP_CMDSHELL IS ENABLE OR DISABLE IN SQL SERVER 2005 AND ABOVE 
+-----------------------------------------------------------------------
+PRINT '<! --- '
+
+IF OBJECT_ID ('tempdb.dbo.#Configuration') IS NOT NULL DROP TABLE dbo.#Configuration
+Create Table dbo.#Configuration (value int,comment varchar(200)) 
+
+INSERT INTO #Configuration 
+SELECT value, comment 
+FROM sysconfigures 
+	where comment in( 'show advanced options','Enable or disable command shell')
+
+IF (Convert(float,LEFT(CONVERT(VARCHAR(10),SERVERPROPERTY('ProductVersion')),2)) >= '9')
+BEGIN
+	IF NOT EXISTS( select * from #Configuration where  comment = 'Enable or disable command shell'  and value = 1)
+	Begin
+			IF (SELECT value from #Configuration  where  comment = 'show advanced options')= 0
+			BEGIN			
+					EXEC sp_configure 'show advanced options',1
+					RECONFIGURE with override					
+					EXEC sp_configure 'xp_cmdshell',1
+					RECONFIGURE with override
+			END
+			ELSE 
+				BEGIN
+					EXEC sp_configure 'xp_cmdshell',1
+					RECONFIGURE with override
+				END
+	END
+END
+PRINT '-->'
+-----------------------------------------------------
+--XP_CMDSHELL STATE IS MODIFIED
+-----------------------------------------------------
+
+declare @GreenLogicalFrag int;  set @GreenLogicalFrag  =   10;
+declare @YellowLogicalFrag int; set @YellowLogicalFrag =   20;
+declare @ShowLogicalFrag int;   set @ShowLogicalFrag   =   10; -- set to 0 for all tables
+declare @scanpages int;         set @scanpages         = 1023; -- set to zero for all tables
+declare @Cellspacing int;       set @Cellspacing       =    0;
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckReport')
+	Drop table tempdb..HealthCheckReport;
+
+Create table tempdb..HealthCheckReport
+      (Scope	varchar(130),
+       Source	varchar(130),
+      [name]	varchar(255), 
+      [Value]	varchar(512),
+       Flag		varchar(30)  default 'white' null
+      );
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckDBOptions')
+	Drop table tempdb..HealthCheckDBOptions;
+
+Create table tempdb..HealthCheckDBOptions 
+      (Optionname varchar(255),
+       CurrentSetting varchar(255)
+      );
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckDBOptionList')
+	Drop table tempdb..HealthCheckDBOptionList;
+
+Create table tempdb..HealthCheckDBOptionList (Optionname varchar(255));
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckConfiguration')
+	Drop table tempdb..HealthCheckConfiguration;
+
+Create table tempdb..HealthCheckConfiguration
+      ([name] varchar(70), 
+       Minimum      int, 
+       Maximum      int, 
+       Config_Value int, 
+       Run_Value    int
+      );
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckSysDatabases')
+	Drop table tempdb..HealthCheckSysDatabases;
+
+Create table tempdb..HealthCheckSysDatabases
+	  (
+	  [name]								sysname				not	null,
+	   database_id							int					not	null,
+	   source_database_id					int						null,
+	   owner_sid							varbinary(85)		not	null,
+	   create_date							datetime			not	null,
+	   compatibility_level					tinyint					null,
+	   collation_name						sysname					null,
+	   user_access							tinyint				not	null,
+	   user_access_desc						nvarchar(60)		not	null,
+	   is_read_only							bit					not	null,
+	   is_auto_close_on						bit					not	null,
+	   is_auto_shrink_on					bit					not	null,
+	   state								tinyint				not	null,
+	   state_desc							nvarchar(60)		not	null,
+	   is_in_standby						bit					not	null,
+	   is_cleanly_shutdown					bit					not	null,
+	   is_supplemental_logging_enabled		bit					not	null,
+	   snapshot_isolation_state				tinyint				not	null,
+	   snapshot_isolation_state_desc		nvarchar(60)		not	null,
+	   is_read_committed_snapshot_on		bit					not	null,
+	   recovery_model						tinyint				not	null,
+	   recovery_model_desc					nvarchar(60)		not	null,
+	   page_verify_option					tinyint				not	null,
+	   page_verify_option_desc				nvarchar(60)		not	null,
+	   is_auto_create_stats_on				bit					not	null,
+	   is_auto_update_stats_on				bit					not	null,
+	   is_auto_update_stats_async_on		bit					not	null,
+	   is_ansi_null_default_on				bit					not	null,
+	   is_ansi_nulls_on						bit					not	null,
+	   is_ansi_padding_on					bit					not	null,
+	   is_ansi_warnings_on					bit					not	null,
+	   is_arithabort_on						bit					not	null,
+	   is_concat_null_yields_null_on		bit					not	null,
+	   is_numeric_roundabort_on				bit					not	null,
+	   is_quoted_identifier_on				bit					not	null,
+	   is_recursive_triggers_on				bit					not	null,
+	   is_cursor_close_on_commit_on			bit					not	null,
+	   is_local_cursor_default				bit					not	null,
+	   is_fulltext_enabled					bit					not	null,
+	   is_trustworthy_on					bit					not	null,
+	   is_db_chaining_on					bit					not	null,
+	   is_parameterization_forced			bit					not	null,
+	   is_master_key_encrypted_by_server	bit					not	null,
+	   is_published							bit					not	null,
+	   is_subscribed						bit					not	null,
+	   is_merge_published					bit					not	null,
+	   is_distributor						bit					not	null,
+	   is_sync_with_backup					bit					not	null,
+ 	   service_broker_guid					uniqueidentifier	not	null,
+	   is_broker_enabled					bit					not	null,
+	   log_reuse_wait						tinyint				not	null,
+	   log_reuse_wait_desc					nvarchar(60)		not	null,
+	   is_date_correlation_on				bit					not	null
+	   );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthChecksp_helppublication')
+	Drop table tempdb..HealthChecksp_helppublication;
+if (Convert(float,convert(char(2),Serverproperty('productversion'))))<10
+	Begin 
+		--create table for SQLVERSION '2005'
+		Create table tempdb..HealthChecksp_helppublication
+			  (pubid						int,
+			  [name]						sysname,
+			   restricted					int,
+			   status						tinyint,
+			   task							varchar(50),
+			  [replication frequency]		tinyint,
+			  [synchronization method]		tinyint,
+			   description					nvarchar(255),
+			   immediate_sync				bit,
+			   enabled_for_internet			bit,
+			   allow_push					bit,
+			   allow_pull					bit,
+			   allow_anonymous				bit,
+			   independent_agent			bit,
+			   immediate_sync_ready			bit,
+			   allow_sync_tran				bit,
+			   autogen_sync_procs			bit,
+			   snapshot_jobid				binary(16),
+			   retention					int,
+			  [has subscription]			bit,
+			   allow_queued_tran			bit,
+			   snapshot_in_defaultfolder	bit,
+			   alt_snapshot_folder			nvarchar(255),
+			   pre_snapshot_script			nvarchar(255),
+			   post_snapshot_script			nvarchar(255),
+			   compress_snapshot			bit,
+			   ftp_address				varchar(255),
+			   ftp_port						int,
+			   ftp_subdirectory				nvarchar(255),
+			   ftp_login					sysname,
+			   allow_dts					bit,
+			   allow_subscription_copy		bit,
+			   centralized_conflicts		bit,
+			   conflict_retention			int,
+			   conflict_policy				int,
+			   queue_type					varchar(10),
+			   backward_comp_level	        int,
+			   publish_to_AD				bit ,
+			 allow_initialize_from_backup	bit,
+			 replicate_ddl				int,
+			 enabled_for_p2p				int,
+			 publish_local_changes_only	int,
+			 enabled_for_het_sub			int,
+				   );
+	End
+ELSE
+	Begin
+			Create table tempdb..HealthChecksp_helppublication
+				  (pubid						int,
+				  [name]						sysname,
+				   restricted					int,
+				   status						tinyint,
+				   task							varchar(50),
+				  [replication frequency]		tinyint,
+				  [synchronization method]		tinyint,
+				   description					nvarchar(255),
+				   immediate_sync				bit,
+				   enabled_for_internet			bit,
+				   allow_push					bit,
+				   allow_pull					bit,
+				   allow_anonymous				bit,
+				   independent_agent			bit,
+				   immediate_sync_ready			bit,
+				   allow_sync_tran				bit,
+				   autogen_sync_procs			bit,
+				   snapshot_jobid				binary(16),
+				   retention					int,
+				  [has subscription]			bit,
+				   allow_queued_tran			bit,
+				   snapshot_in_defaultfolder	bit,
+				   alt_snapshot_folder			nvarchar(255),
+				   pre_snapshot_script			nvarchar(255),
+				   post_snapshot_script			nvarchar(255),
+				   compress_snapshot			bit,
+				   ftp_address				varchar(255),
+				   ftp_port						int,
+				   ftp_subdirectory				nvarchar(255),
+				   ftp_login					sysname,
+				   allow_dts					bit,
+				   allow_subscription_copy		bit,
+				   centralized_conflicts		bit,
+				   conflict_retention			int,
+				   conflict_policy				int,
+				   queue_type					varchar(10),
+				   backward_comp_level	        int,
+				   publish_to_AD				bit ,
+				 allow_initialize_from_backup	bit,
+				 replicate_ddl				int,
+				 enabled_for_p2p				int,
+				 publish_local_changes_only	int,
+				 enabled_for_het_sub			int,
+				 enabled_for_p2p_conflictdetection bit,
+     				originator_id	int ,
+     				p2p_continue_onconflict bit,
+     					allow_partition_switch	bit,
+     					replicate_partition_switch bit
+				  );
+		END
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckMSVer')
+	Drop table tempdb..HealthCheckMSVer;
+
+Create table tempdb..HealthCheckMSVer
+      (
+      [Index] int, 
+      [name] varchar(255),
+       Internal_Value varchar(255),
+       Character_Value varchar(255)
+      );
+
+If exists(Select [name] from tempdb.dbo.sysobjects where [name] = 'HealthCheckFixedDrives')
+	Drop table tempdb..HealthCheckFixedDrives;
+
+Create	table tempdb..HealthCheckFixedDrives
+       (
+        Optionname varchar(255),
+        CurrentSetting varchar(255)
+       );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckLogSpace')
+	Drop table tempdb..HealthCheckLogSpace;
+
+Create table tempdb..HealthCheckLogSpace 
+      (
+       Databasename		sysname, 
+       logsize			float, 
+       SpaceUsedPerc	float, 
+       Status			bit
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckFileSpace')
+	Drop table tempdb..HealthCheckFileSpace;
+
+Create table tempdb..HealthCheckFileSpace 
+      (
+       Fileid		int, 
+       FileGroup	int, 
+       TotalExtents int, 
+       UsedExtents	int, 
+      [name]		sysname, 
+      [Filename]	nchar(520)
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckTables')
+	Drop table tempdb..HealthCheckTables;
+
+Create table tempdb..HealthCheckTables
+      (
+       TableSchema varchar(200),
+       Tablename   varchar(200)
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckTableRows')
+	Drop table tempdb..HealthCheckTableRows;
+
+Create table tempdb..HealthCheckTableRows
+      (
+	  [name]        varchar(150), 
+       rows         bigint, 
+       Reserved		char(30), 
+       Data         char(30), 
+       Index_Size   char(30),
+	   Unused		char(30)
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckIndexes')
+	Drop table tempdb..HealthCheckIndexes;
+
+Create 
+ table tempdb..HealthCheckIndexes 
+      (
+       objectname 		char (255)	null,
+	   Objectid 		int			null,
+       Indexname 		char (255)	null,
+       IndexId   		int			null,
+       Lvl 				int			null,
+       CountPages 		int			null,
+       CountRows 		int			null,
+       MinRecSize 		int			null,
+       MaxRecSize 		int			null,
+       AVgRecSize 		int			null,
+       ForRecCount 		int			null,
+       Extents 			int			null,
+       ExtentSwitches	int			null,
+       AVgFreeBytes		int			null,
+       AVgPageDensity	int			null,
+       ScanDensity		int			null,
+       BestCount		int			null,
+       ActualCount		int			null,
+       LogicalFrag		int			null,
+       ExtentFrag		int			null
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckTableInfo')
+	Drop table tempdb..HealthCheckTableInfo;
+
+Create 
+ table tempdb..HealthCheckTableInfo
+      (       
+       Servername	varchar(130),
+       Databasename	varchar(130),
+       Tablename	varchar(130), 
+       Indexname	varchar(130),
+       IndexId		bigint,
+       Rows			bigint, 
+       CountPages	bigint,
+       mb			decimal(20,9),
+       BestCount	bigint, 
+       ActualCount	bigint, 
+       LogicalFrag  tinyint,
+       ScanDensity	tinyint,
+       Flag			varchar(30) default ('white')
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckAudit')
+	Drop table tempdb..HealthCheckAudit;
+
+Create table tempdb..HealthCheckAudit 
+      (
+       SQLVersion   tinyint,
+	   Optionname	varchar(500),
+	   Recommended	varchar(20),
+       Flag			varchar(20)
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckDiskVolumes')
+	Drop table tempdb..HealthCheckDiskVolumes;
+
+Create table tempdb..HealthCheckDiskVolumes 
+      (
+       Volume       varchar(260),
+       Volumename   varchar(255),
+       FreeSpace    bigint,
+       TotalBytes   bigint,
+       UsedBytes    bigint,
+       FreeBytes    bigint,
+       DataBytes    bigint,
+       LogBytes     bigint,
+       OtherBytes   bigint,
+       Flag			varchar(20)
+      );
+
+If exists(Select [name] 
+            from tempdb.dbo.sysobjects 
+           where [name] = 'HealthCheckCmdShell')
+	Drop table tempdb..HealthCheckCmdShell;
+
+Create table tempdb..HealthCheckCmdShell 
+      (
+       Line       varchar(900)
+      );
+
+Declare @sqlversion tinyint;
+--Set		@sqlversion =cast(cast(ServerProperty('ProductVersion')as char(1))as tinyint)
+select @sqlversion=substring(convert(varchar(20),ServerProperty('ProductVersion')),0,patindex('%.%',convert(varchar(20),ServerProperty('ProductVersion'))))
+
+Declare @Servername varchar(130);
+If @@Servername is null
+	Begin
+	Set @Servername = cast(ServerProperty('Servername') as varchar);
+	If ServerProperty('Instancename') is not null
+		Set @Servername = @Servername + '\ ' + cast(ServerProperty('Instancename') as varchar);
+	End
+else 
+	Set @Servername=@@Servername;
+
+Declare @OSVersion decimal(2,1);
+
+/************* BEGIN:New COde for SQL ErrorLog *****************/
+
+declare @SqlErrLogMsg varchar(4000)
+--IF OBJECT_ID('tempdb..@SqlErrLogs') is not null Drop Table @SqlErrLogs
+Declare  @SqlErrLogs TABLE (ArchiveNumber tinyint, DateCreated Datetime, LogFileSizeBytes bigint)
+INSERT into @SqlErrLogs (ArchiveNumber, DateCreated, LogFileSizeBytes )
+EXEC master.dbo.xp_enumerrorlogs
+
+select @SqlErrLogMsg = 'The current SQL Server ErrorLog was created on ' + convert(varchar, DateCreated , 101) + ' and is using ' +
+case when LogFileSizeBytes <1024 then cast(LogFileSizeBytes as varchar(4)) + ' Bytes of disk space.'
+when LogFileSizeBytes between 1024 and 1048575 then cast(cast(cast(LogFileSizeBytes as money)/1024.0 as money )as varchar(10)) + ' KB of disk space.'
+when LogFileSizeBytes > 1048575 then cast(cast((cast(LogFileSizeBytes as money)/1024.0)/1024.0 as money )as varchar(10)) + ' MB of disk space.'
+else cast(LogFileSizeBytes as varchar(16)) + ' Bytes of disk space.' end 
++ case when LogFileSizeBytes > 10485750
+then ' The ErrorLog Should now be cycled because of its size.( >10MB)'
+when DateCreated <= dateadd(dd, -14,getdate()) then ' The Current SQL ErrorLog SHOULD be cycled because of its age. (> 14Days)'
+else ' The ErrorLog does not need to be cycled.' end
+from @SqlErrLogs where ArchiveNumber = 0 -- note this value; 0 means Current
+--print @SqlErrLogMsg
+
+Insert into tempdb..HealthCheckReport 
+      select @Servername     as Scope, 
+             'ErrorLogs'      as Source,--
+             'SQL errorlog State' as Optionname,
+             @SqlErrLogMsg as [Value],
+             Case WHEN PATINDEX('%cycled because of%',@SqlErrLogMsg)>0 then 'red' ELSE 'white' END  as Flag
+/************* END:New COde for SQL ErrorLog *****************/
+
+/************* BEGIN:New COde for T-log VLFs *****************/
+DECLARE @queryVLFs  VARCHAR(1000),@dbnameVLFs VARCHAR(1000),@countVLFs  INT 
+SET NOCOUNT ON 
+
+if object_ID('tempdb..#loginfo_AllDbs') is not null drop table  #loginfo_AllDbs
+CREATE TABLE #loginfo_AllDbs (dbname VARCHAR(100),dbid as db_id(dbname),num_of_VLFs INT)
+
+if object_ID('tempdb..#tbl13') is not null drop table  #tbl13
+select Identity(int,1,1) AS IDCol, name 
+into #tbl13
+from sys.databases where state_desc='ONLINE' and name not like 'SolarWindsOrion'
+AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+and source_database_id is null -- to Exclude DB Snapshots.
+
+declare @cntDBs int,@numDBs int
+select @cntDBs=count(1) from #tbl13
+select @numDBs=1
+
+while (@cntDBs>=@numDBs)
+begin
+    DECLARE @log_info_thisDB TABLE(fileid TINYINT,RecoveryUnitID BIGINT,file_size BIGINT,start_offset BIGINT, FSeqNo INT,[status] TINYINT,parity TINYINT,create_lsn NUMERIC(25,0)) 
+
+    SELECT @queryVLFs = 'DBCC loginfo (' + '''' + name + ''') WITH NO_INFOMSGS' from #tbl13 where IDCol=@numDBs
+
+
+	--DBCC LOGINFO('MDC_DB')
+	 IF @@VERSION  LIKE '%Microsoft SQL Server 2012%'
+		INSERT INTO @log_info_thisDB EXEC (@queryVLFs) 
+	ELSE  
+		INSERT INTO @log_info_thisDB  (fileid,RecoveryUnitID,file_size,FSeqNo,[status],parity,create_lsn)	EXEC (@queryVLFs) 
+    SELECT @countVLFs =  @@ROWCOUNT 
+
+--print @queryVLFs 
+          
+      INSERT #loginfo_AllDbs 
+      select name, @countVLFs from #tbl13 where IDCol=@numDBs
+      
+      SELECT @numDBs=@numDBs+1
+ END -- End of While Loop 
+
+declare @VLFCountMsg varchar(4000),@VLFthreshold smallint
+select @VLFthreshold=1000
+/* Developers; CAUTION; the below string is also used for parsing for Warning in LOC : ....PATINDEX('%ACTION REQUIRED%.....*/
+select @VLFCountMsg = case when num_of_VLFs >=@VLFthreshold then 
+'ACTION REQUIRED:The following databases have EXCESSIVE (more than '
++ CAST (@VLFthreshold as varchar(10))
++ ' VLFs (your Benchmark may differ) and its recommended to lower VLF count; Consult DBAs '+
+'<br />'
++'dbname  | number of VLFs '+
+'<br />'
++ dbname + '|' +cast(num_of_VLFs as varchar(50)) 
+Else 'NO databases have more than '+ CAST (@VLFthreshold as varchar(10))+' VLFs (your Benchmark may differ)' END
+FROM #loginfo_AllDbs
+
+drop table #loginfo_AllDbs
+
+--print @VLFCountMsg
+Insert into tempdb..HealthCheckReport 
+      select @Servername     as Scope, 
+             'VLF Count'      as Source,--
+             'Database’s VLF Count' as Optionname,
+             @VLFCountMsg as [Value],
+             Case WHEN PATINDEX('%ACTION REQUIRED%',@VLFCountMsg)>0 then 'red' ELSE 'white' END  as Flag       
+/************* END:New COde for T-log VLFs  *****************/
+
+/************* BEGIN:New COde for Defaul Trace State  *****************/
+declare @DefaultTraceMsg varchar(8000)
+/* Developers; CAUTION; the below string is also used for parsing for Warning in LOC : ....PATINDEX('%ACTION REQUIRED%.....*/
+select @DefaultTraceMsg = case when value_in_use <> 1 then 
+'ACTION REQUIRED:The Default Trace is not running on this instance and its recommended to enable it !'
+Else 'The Default Trace is running on this instance' END
+FROM sys.configurations WHERE configuration_id = 1568
+
+--print @DefaultTraceMsg
+Insert into tempdb..HealthCheckReport 
+      select @Servername     as Scope, 
+             'Defaul Trace Status'      as Source,--
+             'Defaul Trace Status' as Optionname,
+             @DefaultTraceMsg as [Value],
+             Case WHEN PATINDEX('%ACTION REQUIRED%',@DefaultTraceMsg)>0 then 'red' ELSE 'white' END  as Flag       
+/************* END:New COde for Defaul Trace State  *****************/
+
+
+
+truncate table tempdb..HealthCheckMSVer;
+
+Insert into tempdb..HealthCheckMSVer execute master..xp_msver
+
+Insert into tempdb..HealthCheckReport 
+      select @Servername     as Scope, 
+             'xp_MSVer'      as Source,
+             [name]          as Optionname,
+             replace(Character_Value,'_',' ') as [Value],
+             'white'         as Flag 
+        from tempdb..HealthCheckMSVer
+       where [name] not like 'Legal%';
+
+Select @OSVersion = cast(left(Character_Value,3) as decimal(2,1))
+  from tempdb..HealthCheckMSVer
+ where [name] = 'WindowsVersion';
+
+Select '<html>';
+Select '<head>'
+Select '<title>'+@Servername+' Instance and Database Health Check</title>'
+Select '<style  TYPE="text/css">'
+Select 'body{
+background-color: white;
+background-attachment: scroll;
+background-repeat:  no-repeat;
+background-position : top left;
+color: black;
+text-align: center;
+font-family: Arial Narrow;
+margin: 0px 0px 0px 0px;
+padding: 5px 5px 5px 5px;
+}'; 
+Select '.caption{
+font-family: Arial Black;
+text-align: left;
+}';
+Select '.newpage{
+page-break-before : always;
+}';
+Select '.headingtable
+{
+}';
+Select '.headingcaption
+{
+background-color : #405050;
+color:white;
+font-family: Arial Black;
+text-align: left;
+font-size : 150%;
+}';
+Select '.headinglabel
+{
+background-color : #405050;
+color:white;
+font-family: Arial;
+font-weight:bolder;
+text-align: left;
+font-size : 125%;
+width:5%;
+}';
+Select '.headingValue
+{
+background-color : #405050;
+color:white;
+font-family: Arial;
+text-align: left;
+font-size : 125%;
+}';
+Select '.toctable{
+background-color: black;
+border-width: 4;
+border-color: black;
+border-style: solid;
+width:100%;
+}';
+Select '.toccaption{
+background-color : #0000d4;
+color:white;
+font-family: Arial Black;
+text-align: center;
+font-size : 150%;
+}';
+Select '.tochead{
+background-color : #6a98f4;
+color:white;
+font-family: Arial;
+text-align: left;
+vertical-align: bottom;
+}';
+Select '.tocred{
+background-color: #ffbbbb;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+border-left-style: solid; 
+border-left-color: #008000; 
+border-left-width: 1;
+border-top-style: solid; 
+border-top-color: #008000; 
+border-top-width: 1;
+}';
+Select '.tocyellow{
+background-color: #ffff99;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+border-left-style: solid; 
+border-left-color: #000080; 
+border-left-width: 1;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.tocodd{
+background-color: #ddddff /*#98c9f5*/;
+text-align: left;
+font-size: 80%;
+}';
+Select '.toceven{
+background-color: #ddddff /*#98c9f5*/;
+text-align: left;
+font-size: 80%;
+}';
+Select '.toclabel{
+background-color: #ddddff;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+}';
+Select '.tocValue{
+background-color: white;
+text-align: left;
+font-size: 80%;
+}';
+Select '.redtable{
+background-color: black;
+border-right-width: 1;
+border-bottom-width: 1;
+border-left-width: 1;
+border-top-width:1;
+border-color: #000000;
+border-style: solid;
+width:100%;
+}';
+Select '.redcaption{
+background-color : #d40000;
+font-family: Arial Black;
+color:white;
+text-align: center;
+font-size : 150%;
+border-bottom-style: solid; 
+border-bottom-color: orange; 
+border-bottom-width: 4;
+}';
+Select '.redhead{
+background-color : #ffbbbb;
+text-align: left;
+font-family: Arial;
+border-top-style: solid; 
+border-top-color: #800000;
+border-top-width: 1;
+}';
+Select '.redodd{
+background-color: #ffffff;
+text-align: left;
+font-size: 80%;
+}';
+Select '.redeven{
+background-color: #ffeeee;
+text-align: left;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #800000; 
+border-top-width: 1;
+}';
+Select '.redlabel{
+background-color: #ffbbbb;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #800000; 
+border-top-width: 1;
+}';
+Select '.redValue{
+background-color:  #ffbbbb;
+text-align: left;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.redright{
+background-color:  #ffbbbb;
+text-align: right;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.yellowtable{
+background-color: black;
+border-right-width: 1;
+border-bottom-width: 1;
+border-left-width: 1;
+border-top-width:1;
+border-color: #000000;
+border-style: solid;
+width:100%;
+}';
+Select '.yellowcaption{
+background-color : #ffff00;
+font-family: Arial Black;
+text-align: center;
+font-size : 150%;
+border-bottom-style: solid; 
+border-bottom-color: orange; 
+border-bottom-width: 4;
+}';
+Select '.yellowhead{
+background-color : #ffff99;
+font-family: Arial;
+text-align: left;
+border-top-style: solid; 
+border-top-color: #808000;
+border-top-width: 1;
+}';
+Select '.yellowodd{
+background-color: #ffffff;
+text-align: left;
+font-size: 80%;
+}';
+Select '.yelloweven{
+background-color: #ffffcc;
+text-align: left;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #808000; 
+border-top-width: 1;
+}';
+Select '.yellowlabel{
+background-color: #ffff99;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #808000; 
+border-top-width: 1;
+}';
+Select '.yellowValue{
+background-color:  #ffff99;
+text-align: left;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.yellowright{
+background-color:  #ffff99;
+text-align: right;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.greentable{
+background-color: black;
+border-width: 4;
+border-color: black;
+border-style: double;
+width:100%;
+}';
+Select '.greencaption{
+background-color : #bbffbb;
+font-family: Arial Black;
+text-align: center;
+font-size : 150%;
+}';
+Select '.greenhead{
+background-color : #bbffbb;
+font-family: Arial;
+text-align: left;
+}';
+Select '.greenodd{
+background-color: white;
+text-align: left;
+font-size: 80%;
+}';
+Select '.greeneven{
+background-color: #e0ffe0;
+text-align: left;
+font-size: 80%;
+}';
+Select '.greenlabel{
+background-color: #e0ffe0;
+text-align: left;
+font-weight : bolder;
+font-size: 80%;
+}';
+Select '.greenValue{
+background-color:  #bbffbb;
+text-align: left;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+font-size: 80%;
+}';
+Select '.greenright{
+background-color:  #bbffbb;
+text-align: right;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+font-size: 80%;
+}';
+Select '.whitetable{
+background-color: black;
+border-right-width: 1;
+border-bottom-width: 1;
+border-left-width: 0;
+border-top-width:1;
+border-color: #000080;
+border-style: solid;
+width:100%;
+}';
+Select '.whitecaption{
+background-color : #0000d4;
+color:white;
+font-family: Arial Black;
+text-align: left;
+font-size : 150%;
+border-left-style: solid; 
+border-left-color: #000080; 
+border-left-width: 1;
+border-bottom-style: solid; 
+border-bottom-color: orange; 
+border-bottom-width: 4;
+}';
+Select '.whitehead{
+background-color : #6a98f4;
+color:white;
+font-family: Arial;
+text-align: left;
+vertical-align: bottom;
+border-top-style: solid; 
+border-top-color: blue; 
+border-top-width: 4;
+border-bottom-style: solid; 
+border-bottom-color: #000080; 
+border-bottom-width: 1;
+}';
+Select '.whiteheadedge{
+background-color : #6a98f4;
+color:white;
+font-family: Arial;
+text-align: left;
+vertical-align: bottom;
+border-left-style: solid; 
+border-left-color: #000080; 
+border-left-width: 1;
+border-top-style: solid; 
+border-top-color: blue; 
+border-top-width: 4;
+border-bottom-style: solid; 
+border-bottom-color: #000080; 
+border-bottom-width: 1;
+}';
+Select '.whiteheadright{
+background-color : #6a98f4;
+color:white;
+font-family: Arial;
+text-align: right;
+vertical-align: bottom;
+border-top-style: solid; 
+border-top-color: blue; 
+border-top-width: 4;
+border-bottom-style: solid; 
+border-bottom-color: #000080; 
+border-bottom-width: 1;
+}';
+Select '.whiteodd{
+background-color: #ddddff /*#98c9f5*/;
+text-align: left;
+font-size: 80%;
+}';
+Select '.whiteeven{
+background-color: #ddddff /*#98c9f5*/;
+text-align: left;
+font-size: 80%;
+}';
+Select '.whitelabel{
+background-color: #ccddff;
+text-align: left;
+font-weight : bolder;
+border-left-style: solid; 
+border-left-color: #000080; 
+border-left-width: 1;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+font-size: 80%;
+}';
+Select '.whiteValue{
+background-color: white;
+text-align: left;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+font-size: 80%;
+}';
+Select '.whiteright{
+background-color: white;
+text-align: right;
+font-size: 80%;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+}';
+Select '.whiteblank{
+background-color: #ccddff;
+text-align: left;
+font-weight : bolder;
+border-top-style: solid; 
+border-top-color: #000080; 
+border-top-width: 1;
+font-size: 80%;
+}';
+Select '.footnote{
+font-size:70%;
+color: gray;
+text-align: right;
+}';
+Select '</style>';
+Select '</head>';
+Select '<body>';
+Select '<!--  '; -- hide execution messages
+
+Print 'O/S Version ' + ltrim(str(@OSVersion,3,1));
+--Print 'SQL Version ' + ltrim(str(@sqlversion,1));
+Print 'SQL Version ' + ltrim(str(@sqlversion,2));
+
+declare @hcbegins datetime;
+set @hcbegins = getdate();
+
+Select 'Health Check begins @ ' + convert(varchar(19),@hcbegins,121);
+
+Checkpoint;
+
+Declare @sql varchar(4000);
+Declare @serverTotalExtents bigint;
+Declare @TotalExtents       bigint;
+Declare @ServerUsedExtents   bigint;
+Declare @UsedExtents        bigint;
+Declare @status integer;
+Declare @ONLINE integer;
+Declare @SingleUser integer;
+Declare @thisbase sysname;
+Declare @lastbase sysname;
+Declare @Tablename VARCHAR (130)
+Declare @TableSchema VARCHAR(130)
+Declare @Execstr   VARCHAR (255)
+Declare @objectid  INT
+Declare @IndexId   INT
+Declare @Frag      DECIMAL
+Declare @MaxFrag   DECIMAL
+Declare @CmdLine varchar(255);
+DECLARE @tempStoreUPDATEUSAGE TABLE (ID INT identity(1,1),COMMAND varchar(500))
+
+/*********** Initial entries for STANDARDs Starts ***************/
+If @sqlversion = 9 insert into tempdb..HealthCheckAudit Values (8,'Compatibility level','8.0','yellow')
+If @sqlversion = 10 insert into tempdb..HealthCheckAudit Values (8,'Compatibility level','8.0','yellow')
+
+insert into tempdb..HealthCheckAudit Values (9,'Compatibility level','9.0','yellow')
+Insert into tempdb..HealthCheckAudit Values (9,'Auto create statistics','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Auto update statistics','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Auto create stats','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Auto update stats','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Autoclose','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Autoshrink','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Auto close','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Auto shrink','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Dbo use only','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'State','OnLine','red');
+--	Insert into tempdb..HealthCheckAudit Values (9,'State desc','OnLine','red');
+Insert into tempdb..HealthCheckAudit Values (9,'Read only','No','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Recovery model','Full','yellow');
+--	Insert into tempdb..HealthCheckAudit Values (9,'Recovery model description','Full','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Recursive triggers','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Single user','off','red');
+Insert into tempdb..HealthCheckAudit Values (9,'user access','Multi_User','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Torn page detection','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'page verify option','Checksum','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Trunc. log on chkpt.','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (9,'Compatibility level','9.0','yellow');
+
+Insert into tempdb..HealthCheckAudit Values (10,'Auto create statistics','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Auto update statistics','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Auto create stats','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Auto update stats','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Autoclose','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Autoshrink','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Auto close','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Auto shrink','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Dbo use only','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'State','OnLine','red');
+--	Insert into tempdb..HealthCheckAudit Values (10,'State desc','OnLine','red');
+Insert into tempdb..HealthCheckAudit Values (10,'Read only','No','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Recovery model','Full','yellow');
+--	Insert into tempdb..HealthCheckAudit Values (10,'Recovery model description','Full','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Recursive triggers','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Single user','off','red');
+Insert into tempdb..HealthCheckAudit Values (10,'user access','Multi_User','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Torn page detection','ON','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'page verify option','Checksum','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Trunc. log on chkpt.','off','yellow');
+Insert into tempdb..HealthCheckAudit Values (10,'Compatibility level','10.0','yellow');
+/*********** Initial entries for STANDARDs ENDs ***************/
+
+/************** LOG SPACE CALculation starts *************/
+truncate table tempdb..HealthCheckLogSpace;
+
+insert tempdb..HealthCheckLogSpace
+SELECT instance_name AS DatabaseName,  (convert(float, [LOG File(s) Size (KB)])/1024)   [LOG File(s) Size (MB)], [Percent Log Used],      0 as [STATUS]  
+FROM 
+(    SELECT *    FROM sys.dm_os_performance_counters NOLOCK    WHERE counter_name IN     (        'Data File(s) Size (KB)',        'Log File(s) Size (KB)',        'Log File(s) Used Size (KB)',        'Percent Log Used'    )      AND instance_name NOT IN ( '_Total','mssqlsystemresource')) AS Src 
+PIVOT 
+(    MAX(cntr_value)    FOR counter_name IN    (        [Data File(s) Size (KB)],        [LOG File(s) Size (KB)],        [Log File(s) Used Size (KB)],        [Percent Log Used]    ) ) AS pvt 
+
+insert into tempdb..HealthCheckReport
+       Select @Servername + '.' + Databasename as Scope,
+              'dbcc sqlperf(logspace)' as Source,
+              'Log file space = ' + ltrim(str(logsize, 15))+'MB' as Optionname,
+              ltrim(str((100 - SpaceUsedPerc),9,0))+'% free' as [Value],'white'
+   from tempdb..HealthCheckLogSpace
+        where Databasename not in ('adventureworks','pubs','northwind')
+/************** LOG SPACE CALculation ENDSs *************/
+
+set		@serverTotalExtents=0;
+set		@ServerUsedExtents=0;
+Set     @thisbase = '';
+Set     @lastbase = '';
+
+/*********BEGIN: WHILE loop begins which RUNS for every online Db: 1.UpdateUsage 2. Index Fragmentation calc ******/
+----while (exists(Select top 1 [name] 
+--                 from master.sys.databases 
+--                where [name] > @lastbase 
+--                  and [name] not in ('adventureworks','pubs','northwind') 
+--				  and state_desc = 'ONLINE'
+--                 order by [name]))
+--begin 
+
+--      Select top 1 @thisbase=[name], 
+--			     @ONLINE=case when state_desc='online' then 1 Else 0 END,
+--                 @SingleUser=case when user_Access=1 then 1 Else 0 END
+--      from master.sys.databases    
+--      where [name] > @lastbase 
+--      and [name] not in ('adventureworks','pubs','northwind') 
+--	  and state_desc = 'ONLINE'
+--		order by [name];
+
+--			/************** COde inside While Loops: UPDATEUSAGE Starts *******************/
+--			--OLD CODE
+--			--DBCC UpdateUsage ();
+
+--			----NEW CODE;Gajanan 16May2011- skip the updateUsage if db size is above 100GB.
+--			declare @cmdUpdateUsage nvarchar(200)
+--			select @cmdUpdateUsage=CASE when  SUM(size) <104857600 then 'DBCC UpdateUsage (0) WITH NO_INFOMSGS'  ELSE NULL END --, SUM(size)  
+--			from master.sys.sysaltfiles  
+--			where [dbid]=DB_ID(@thisbase) and fileid <>2 ---- size in Kbs
+
+--			EXEC sp_executesql  @cmdUpdateUsage 
+--			/************** COde inside While Loops: UPDATEUSAGE ENDs *******************/
+
+--    Truncate table tempdb..HealthCheckTables;
+--    Truncate table tempdb..HealthCheckTableRows;
+--    Truncate table tempdb..HealthCheckIndexes;
+
+--	/*********** CODE RUNS FOR EVERY DB EVERY TABLE Start **************/
+----	If ( @ONLINE = 1 and @SingleUser=0 and @thisbase <> 'tempdb')
+----		begin
+
+---- 			-- replacement for SHOWCONTIG
+---- 				SET @cmd =
+----			'Insert into tempdb..HealthCheckIndexes(objectname,Objectid ,Indexname ,IndexId,CountPages, ScanDensity,BestCount,ActualCount,LogicalFrag)
+----			SELECT O.NAME OBJNAME, V.object_id, 
+----				  I.NAME IDXNAME,  V.index_id,page_count,NULL as ScanDensity ,NULL as BestCount,NULL as ActualCount ,AVG_FRAGMENTATION_IN_PERCENT 
+----				FROM sys.dm_db_index_physical_stats ( CAST (DB_ID('''+ @thisbase +''') AS VARCHAR(3)),NULL, NULL, NULL, NULL) V  
+----				JOIN ['+ @thisbase +'].sys.objects AS O ON V.object_id = O.object_id  AND V.index_id >0
+----				JOIN ['+ @thisbase +'].sys.schemas AS S ON S.schema_id = O.schema_id  
+----				JOIN ['+ @thisbase +'].sys.indexes AS I ON I.object_id = O.object_id  
+----				 AND V.index_id = I.index_id  '
+----			--Exec (@cmd)
+		
+----			--to prevent tableName which may throw errors e.g. Table: [abc'de]
+----			declare @cmd31 nvarchar(4000)
+----			SET QUOTED_IDENTIFIER ON
+----			select @cmd31='Use ['+@thisbase+'];
+----			Insert into tempdb..HealthCheckTables
+----			select TABLE_SCHEMA,TABLE_NAME from INFORMATION_SCHEMA.TABLES  where len(TABLE_NAME) <128 AND TABLE_TYPE = ''BASE TABLE''
+----			and TABLE_NAME not like ''%''''%'''
+			
+----			EXEC sp_executesql @cmd31
+----			SET QUOTED_IDENTIFIER OFF
+
+----			--- You could use the CURSOR_STATUS() function to check existing Cursors..
+----					if CURSOR_STATUS('global','tables') >= 0 
+----						begin
+----							close tables
+----							deallocate tables 
+----						end
+
+----					Declare tables cursor for
+----					select TableSchema,Tablename
+----					from tempdb..HealthCheckTables
+				
+----				Open tables
+
+----					-- Loop through all the tables in the database
+----					Fetch next   from tables   into @TableSchema,@Tablename;
+				
+----					While @@Fetch_Status = 0
+----					Begin
+----						Exec ('Use ['+@thisbase+'];Insert into tempdb..HealthCheckTableRows Exec(''sp_spaceused     ''''['+@TableSchema+'].['+@Tablename+']'''''');');
+						
+----						/* SHOWCONTIG is replaced by DMV and code is moved outside forEach Table loope and ran at forEach DB level */
+----						--Exec ('Use ['+@thisbase+'];Insert into tempdb..HealthCheckIndexes   Exec(''DBCC ShowContig (''''['+@TableSchema+'].['+@Tablename+']'''') WITH FAST, tableresults, all_indexes, no_infomsgs'')')
+						
+----						Fetch next   from tables   into @TableSchema,@Tablename;
+----					End;
+----				-- Close and deallocate the cursor
+----				Close tables;
+----				Deallocate tables;
+ 	
+
+
+----				Insert into tempdb..HealthCheckTableInfo
+----					select @Servername as Servername,
+----						   @thisbase as Databasename,
+----						   rtrim(r.[name]) as Tablename, 
+----						   case when i.IndexId > 0 then rtrim(i.Indexname) else '(heap)' end as Indexname,
+----						   i.IndexId as IndexId,
+----						   r.rows as Rows, 
+----						   i.CountPages as CountPages,
+----						   ltrim(str((i.CountPages*cast(8192 as bigint))/(1024*1024.0),15,9)) as mb,
+----						   i.BestCount as BestCount, 
+----						   i.ActualCount as ActualCount, 
+----						   i.LogicalFrag as LogicalFrag,
+----						   i.ScanDensity as ScanDensity, 
+----						   case when i.IndexId    = 0                  then 'green'
+----								when LogicalFrag <= @GreenLogicalFrag  then 'green'
+----								when LogicalFrag <= @YellowLogicalFrag then 'yellow'
+----																	   else 'red' 
+----						   end as Flag 
+----					  from tempdb..HealthCheckTableRows as r
+----					  left
+----					  join tempdb..HealthCheckIndexes   as i
+----						on r.[name] = i.objectname
+----					where i.IndexId not in (0, 255) ;	
+----					end;
+
+--			Set @lastbase=@thisbase;
+--end;
+
+/*********END: WHILE loop begins which RUNS for every online Db: 1.UpdateUsage 2. Index Fragmentation calc ******/
+
+/*********BEGIN: updating Index Fragmentation calc ******/
+Insert into tempdb..HealthCheckReport 
+Select Servername+'.'+Databasename   as Scope,
+		'dbcc showcontig'             as Source,
+		Tablename+'.'+Indexname       as [name],
+		ltrim(str(LogicalFrag,5))+'%<br />consider removing fragmentation using ReOrganize/Rebuild Index to fix.' as [Value], 
+		Flag
+		from tempdb..HealthCheckTableInfo
+            where CountPages   >= @scanpages
+              and LogicalFrag  >  @GreenLogicalFrag
+              and IndexId      >  0;
+/*********END: updating Index Fragmentation calc ******/
+
+
+/*********BEGIN: updating SP_CONFIGURE Values ******/
+if @sqlversion > 8
+    begin
+	
+			Insert into tempdb..HealthCheckReport 
+		    Select @Servername as Scope,
+			      'sys.configurations' as Source,
+				  [name] as Optionname,
+				   	   case 
+                       when Minimum=0 and Maximum=1 and Value_in_use = 0 then 'Off'
+                       when Minimum=0 and Maximum=1 and Value_in_use = 1 then 'On'
+                       when [name] like 'affinity%'                      then master.dbo.fn_varbintohexstr(cast(Value_in_use as varbinary))
+                                                                         else ltrim(str(convert(bigint,Value_in_use),15)) 
+                       end + 
+                       case
+                       when Value_in_use   = [Value] then ''
+                      when @sqlversion=9 and name like 'min server memory%' and Value_in_use=8 then '' 
+                       when Minimum     =0 and Maximum     =1  and [Value]=0 then '<br />Config=Off!'
+                       when Minimum     =0 and Maximum     =1 and [Value]=1 then '<br />Config=On!'
+                      else '<br />Config='+ltrim(str(convert(bigint,[Value]),15))+'!'
+                       end 
+                       as [Value], 
+                      case when @sqlversion=9 and Value_in_use <> [Value] and name like 'min server memory%' and Value_in_use=8 then 'white'
+                      when Value_in_use <> [Value] then 'red' 
+                      else 'white' end as Flag  
+	         from sys.configurations
+   
+   /*********BEGIN: updating ALL DB level settings *****/
+			Insert into tempdb..HealthCheckSysDatabases 
+			Select name, 
+					database_id, 
+					source_database_id, 
+					owner_sid, 
+					create_date, 
+					compatibility_level, 
+					collation_name, 
+					user_access, 
+					user_access_desc, 
+					is_read_only, 
+					is_auto_close_on, 
+					is_auto_shrink_on, 
+					state, 
+					state_desc, 
+					is_in_standby, 
+					is_cleanly_shutdown, 
+					is_supplemental_logging_enabled, 
+					snapshot_isolation_state,
+					snapshot_isolation_state_desc
+					, is_read_committed_snapshot_on
+					, recovery_model
+					, recovery_model_desc
+					, page_verify_option
+					, page_verify_option_desc
+					, is_auto_create_stats_on
+					, is_auto_update_stats_on
+					, is_auto_update_stats_async_on
+					, is_ansi_null_default_on
+					, is_ansi_nulls_on
+					, is_ansi_padding_on
+					, is_ansi_warnings_on
+					, is_arithabort_on
+					, is_concat_null_yields_null_on
+					, is_numeric_roundabort_on
+					, is_quoted_identifier_on
+					, is_recursive_triggers_on
+					, is_cursor_close_on_commit_on
+					, is_local_cursor_default
+					, is_fulltext_enabled
+					, is_trustworthy_on
+					, is_db_chaining_on
+					, is_parameterization_forced
+					, is_master_key_encrypted_by_server
+					, is_published
+					, is_subscribed
+					, is_merge_published
+					, is_distributor
+					, is_sync_with_backup
+					, service_broker_guid
+					, is_broker_enabled
+					, log_reuse_wait
+					, log_reuse_wait_desc
+					, is_date_correlation_on                                                                                                                    
+             from master.sys.databases
+            where name not in ('adventureworks','pubs','northwind','SolarWindsOrion')
+			  and DATABASEPROPERTYEX([name], 'status') = 'ONLINE' AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' ;
+
+
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'database id'                          as Optionname,ltrim(str(database_id,20)) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'Source database id'                   as Optionname,case when source_database_id is null then 'Not a database snapshot' else ltrim(str(source_database_id,20)) end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'owner sid'                            as Optionname,case when owner_sid is null then 'Null' else SUSER_Sname (owner_sid) end as [Value],'white' as Flag from tempdb..HealthCheckSysDatabases;
+	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'creation date'                        as Optionname,convert(varchar(20),create_date,100) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'compatibility level'                  as Optionname,case when compatibility_level is null then 'Database is not onLine, or AUTO_CLOSE is set to ON.' else ltrim(str(source_database_id/10.0,10,1)) end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'collation name'                       as Optionname,case when compatibility_level is null then 'Database is not onLine, or AUTO_CLOSE is set to ON.' else convert(varchar(255),collation_name) end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'user access'              as Optionname,user_access_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'trustworthy on'                       as Optionname,case is_trustworthy_on                 when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'db chaining'                          as Optionname,case is_db_chaining_on                 when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'parameterization forced'              as Optionname,case is_parameterization_forced        when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'master key encrypted by server'       as Optionname,case is_master_key_encrypted_by_server when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'read only'                            as Optionname,case is_read_only                      when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'auto close'                           as Optionname,case is_auto_close_on                  when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'auto shrink'                          as Optionname,case is_auto_shrink_on                 when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+--    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'state'                                as Optionname,ltrim(str(state,20)) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'state'                           as Optionname,state_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'in standby'                           as Optionname,case is_in_standby                     when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'cleanly shutdown'                     as Optionname,case is_cleanly_shutdown               when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+--    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'snapshot isolation state'             as Optionname,ltrim(str(snapshot_isolation_state,20)) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'snapshot isolation state' as Optionname,snapshot_isolation_state_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'read committed snapshot'              as Optionname,case is_read_committed_snapshot_on     when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+--  Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'recovery model'                       as Optionname,ltrim(str(recovery_model,20)) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'recovery model'           as Optionname,recovery_model_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+--    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'page verify option'                   as Optionname,ltrim(str(page_verify_option,20)) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'page verify option'       as Optionname,page_verify_option_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'read committed snapshot'              as Optionname,case is_read_committed_snapshot_on     when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'date correlation'                     as Optionname,case is_date_correlation_on            when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'auto create statistics'                    as Optionname,case is_auto_create_stats_on           when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+--   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'auto update stats'                    as Optionname,case is_auto_update_stats_on           when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'auto update stats async'              as Optionname,case is_read_committed_snapshot_on     when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'ansi null default'                    as Optionname,case is_ansi_null_default_on           when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'ansi nulls'                           as Optionname,case is_ansi_nulls_on                  when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'ansi padding'                         as Optionname,case is_ansi_padding_on                when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'ansi warnings'                        as Optionname,case is_ansi_warnings_on               when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'arithabort'                           as Optionname,case is_arithabort_on                  when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'concat null yields null'              as Optionname,case is_concat_null_yields_null_on     when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'numeric roundabort'                   as Optionname,case is_numeric_roundabort_on          when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'quoted identifier'                    as Optionname,case is_quoted_identifier_on           when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'recursive triggers'                   as Optionname,case is_recursive_triggers_on          when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'cursor close on commit'               as Optionname,case is_cursor_close_on_commit_on      when 1 then 'On' else 'Off' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'local cursor default'                 as Optionname,case is_local_cursor_default           when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'fulltext enabled'                     as Optionname,case is_fulltext_enabled               when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'supplemental logging enabled'         as Optionname,case is_supplemental_logging_enabled   when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'published'                            as Optionname,case is_published                      when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'subscribed'                           as Optionname,case is_subscribed                     when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'merge published'                      as Optionname,case is_merge_published                when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'distributor'                          as Optionname,case is_distributor                    when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'sync with backup'                     as Optionname,case is_sync_with_backup               when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+   	Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'broker enabled'                       as Optionname,case is_broker_enabled                 when 1 then 'Yes' else 'No' end as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'service broker guid'                  as Optionname,convert(varchar(255),service_broker_guid) as [Value],'white' from tempdb..HealthCheckSysDatabases;
+    Insert into tempdb..HealthCheckReport select @Servername+'.'+[name] as Scope, 'sys.databases' as Source,'log reuse wait'           as Optionname,log_reuse_wait_desc as [Value],'white' from tempdb..HealthCheckSysDatabases;
+
+	-- SERVER PROPERTIES	
+	Insert into tempdb..HealthCheckReport 
+	select @Servername as Scope,'ServerProperty' as Source,'Edition'                  as Optionname,convert(varchar(255),SERVERPROPERTY('Edition')                 ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Build CLR Version'          as Optionname,convert(varchar(255),SERVERPROPERTY('BuildClrVersion')         ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Collation'                as Optionname,convert(varchar(255),SERVERPROPERTY('Collation')               ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Collation Id'              as Optionname,convert(varchar(255),SERVERPROPERTY('CollationId')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Comparison Style'          as Optionname,convert(varchar(255),SERVERPROPERTY('ComparisonStyle')         ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Computer name Physical NetBIOS' as Optionname,convert(varchar(255),SERVERPROPERTY('ComputernamePhysicalNetBIOS')) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'LCID'                     as Optionname,convert(varchar(255),SERVERPROPERTY('LCID')                    ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Process Id'                as Optionname,convert(varchar(255),SERVERPROPERTY('ProcessId')               ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Engine Edition'           as Optionname,convert(varchar(255),SERVERPROPERTY('Engine Edition')          ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Instance name'             as Optionname,convert(varchar(255),SERVERPROPERTY('Instancename')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'ReSource Last Update Date Time' as Optionname,convert(varchar(255),SERVERPROPERTY('ReSourceLastUpdateDateTime')) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'ReSource Version'          as Optionname,convert(varchar(255),SERVERPROPERTY('ReSourceVersion')         ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Clustered'              as Optionname,convert(varchar(255),SERVERPROPERTY('IsClustered')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Full Text Installed'      as Optionname,convert(varchar(255),SERVERPROPERTY('IsFullTextInstalled')     ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Integrated Security Only' as Optionname,convert(varchar(255),SERVERPROPERTY('IsIntegratedSecurityOnly')) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Single User'             as Optionname,convert(varchar(255),SERVERPROPERTY('IsSingleUser')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Sync With Backup'         as Optionname,convert(varchar(255),SERVERPROPERTY('IsSyncWithBackup')        ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'License Type'              as Optionname,convert(varchar(255),SERVERPROPERTY('LicenseType')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Machine name'              as Optionname,convert(varchar(255),SERVERPROPERTY('Machinename')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Num Licenses'              as Optionname,convert(varchar(255),SERVERPROPERTY('NumLicenses')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQL Char Set'               as Optionname,convert(varchar(255),SERVERPROPERTY('SQLCharSet')              ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQL Char Set name'           as Optionname,convert(varchar(255),SERVERPROPERTY('SQLCharSetname')          ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQL Sort Order'             as Optionname,convert(varchar(255),SERVERPROPERTY('SQLSortOrder')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQL Sort Order name'         as Optionname,convert(varchar(255),SERVERPROPERTY('SQLSortOrdername')        ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Product Version'           as Optionname,convert(varchar(255),SERVERPROPERTY('ProductVersion')          ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Product Level'             as Optionname,convert(varchar(255),SERVERPROPERTY('ProductLevel')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Server name'               as Optionname,convert(varchar(255),SERVERPROPERTY('Servername')              ) as [Value],'white'
+    ;
+	end       
+/*
+/***** BEGIN:PORTION IS APPLICABLE FOR PREVIOUS to SQL SERVER 2005 ********/
+else
+
+	begin
+	
+	Insert into tempdb..HealthCheckReport 
+   	          select @Servername as Scope,'ServerProperty' as Source,'Edition'                  as Optionname,convert(varchar(255),SERVERPROPERTY('Edition')                 ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Collation'                as Optionname,convert(varchar(255),SERVERPROPERTY('Collation')               ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Collation Id'              as Optionname,convert(varchar(255),SERVERPROPERTY('CollationId')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Comparison Style'          as Optionname,convert(varchar(255),SERVERPROPERTY('ComparisonStyle')         ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'LCID'                     as Optionname,convert(varchar(255),SERVERPROPERTY('LCID')                    ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Process Id'                as Optionname,convert(varchar(255),SERVERPROPERTY('ProcessId')               ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Engine Edition'           as Optionname,convert(varchar(255),SERVERPROPERTY('Engine Edition')          ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Instance name'             as Optionname,convert(varchar(255),SERVERPROPERTY('Instancename')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Clustered'              as Optionname,convert(varchar(255),SERVERPROPERTY('IsClustered')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Full Text Installed'      as Optionname,convert(varchar(255),SERVERPROPERTY('IsFullTextInstalled')     ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Integrated Security Only' as Optionname,convert(varchar(255),SERVERPROPERTY('IsIntegratedSecurityOnly')) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Single User'             as Optionname,convert(varchar(255),SERVERPROPERTY('IsSingleUser')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Is Sync With Backup'         as Optionname,convert(varchar(255),SERVERPROPERTY('IsSyncWithBackup')        ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'License Type'              as Optionname,convert(varchar(255),SERVERPROPERTY('LicenseType')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Machine name'              as Optionname,convert(varchar(255),SERVERPROPERTY('Machinename')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Num Licenses'              as Optionname,convert(varchar(255),SERVERPROPERTY('NumLicenses')             ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQLCharSet'               as Optionname,convert(varchar(255),SERVERPROPERTY('SQLCharSet')              ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'SQLSortOrder'             as Optionname,convert(varchar(255),SERVERPROPERTY('SQLSortOrder')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Product Version'           as Optionname,convert(varchar(255),SERVERPROPERTY('ProductVersion')          ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Product Level'             as Optionname,convert(varchar(255),SERVERPROPERTY('ProductLevel')            ) as [Value],'white'
+	union all select @Servername as Scope,'ServerProperty' as Source,'Server name'               as Optionname,convert(varchar(255),SERVERPROPERTY('Servername')              ) as [Value],'white'
+    ;
+    
+        truncate table tempdb..HealthCheckConfiguration;
+
+		Insert into tempdb..HealthCheckConfiguration execute sp_configure;
+
+		Insert into tempdb..HealthCheckReport 
+				select @Servername as Scope, 
+					   'sp_Configure' as Source,
+					   [name], 
+					   case 
+                       when Minimum  =0 
+                        and Maximum  =1 
+                        and Run_Value=0 then 'Off'
+                       when Minimum  =0 
+                        and Maximum  =1 
+                        and Run_Value=1 then 'On'
+                                        else ltrim(str(Run_Value,15)) 
+                       end + 
+                       case
+                       when Run_Value   = Config_Value then ''
+                       when Minimum     =0 
+                        and Maximum     =1  
+                        and Config_Value=0 then '<br />Config=Off!'
+                       when Minimum     =0 
+                        and Maximum     =1 
+                        and Config_Value=1 then '<br />Config=On!'
+                                           else '<br />Config='+ltrim(str(Config_Value,15))+'!' 
+                       end 
+                       as [Value],
+                       case when Run_Value <> Config_Value then 'red' else 'white' end as Flag 
+				   from tempdb..HealthCheckConfiguration;
+	end;
+/***** END:PORTION IS APPLICABLE FOR PREVIOUS to SQL SERVER 2005 ********/
+	*/
+
+/*** BEGIN: UPDATE instance uptime *******/
+		Insert into tempdb..HealthCheckReport 
+       	select @Servername   as Scope, 
+               'tempdb Creation Date'    as Source, 
+               'Instance Uptime'       as Optionname,
+               case 
+               when datediff(hh,crdate,getdate()) < 2 
+               then ltrim(str(datediff(mi,crdate,getdate())))+' minutes' 
+               when datediff(dd,crdate,getdate()) < 2 
+               then ltrim(str(datediff(hh,crdate,getdate())))+' hours'
+               when datediff(mm,crdate,getdate()) < 12
+               then ltrim(str(datediff(dd,crdate,getdate())))+' days' 
+               else ltrim(str(datediff(mm,crdate,getdate())))+' months'
+               end  as [Value],
+               'white'
+          from master.dbo.sysdatabases 
+         where [name] = 'tempdb';
+/*** END: UPDATE instance uptime *******/
+
+truncate table tempdb..HealthChecksp_helppublication
+
+truncate table tempdb..HealthCheckDBOptions;
+
+Declare @ThisOption varchar(255);
+Declare @LastOption varchar(255);
+
+Truncate table tempdb..HealthCheckDBOptionList;
+
+	-- Getting ALL possible DB options.
+	IF @@VERSION  LIKE '%Microsoft SQL Server 2012%'
+		BEGIN
+		Insert into tempdb..HealthCheckDBOptionList
+		SELECT 'ANSI null default'  UNION ALL SELECT 'ANSI nulls'  UNION ALL SELECT 'ANSI padding'  UNION ALL SELECT 'ANSI warnings' UNION ALL SELECT 'arithabort'
+ UNION ALL SELECT 'auto create statistics' UNION ALL SELECT 'auto update statistics' UNION ALL SELECT 'autoclose' UNION ALL SELECT 'autoshrink'
+ UNION ALL SELECT 'concat null yields null' UNION ALL SELECT 'cursor close on commit' UNION ALL SELECT 'db chaining'
+ UNION ALL SELECT 'dbo use only' UNION ALL SELECT 'default to local cursor' UNION ALL SELECT 'merge publish'
+ UNION ALL SELECT 'numeric roundabort' UNION ALL SELECT 'offline' UNION ALL SELECT 'published' UNION ALL SELECT 'quoted identifier' UNION ALL SELECT 'read only'
+ UNION ALL SELECT 'recursive triggers' UNION ALL SELECT 'select into/bulkcopy' UNION ALL SELECT 'single user'  UNION ALL SELECT 'subscribed' 
+ UNION ALL SELECT 'torn page detection'  UNION ALL SELECT 'trunc. log on chkpt.'
+		END
+	ELSE  
+	   Insert into tempdb..HealthCheckDBOptionList  execute sp_dboption
+
+SELECT 'ANSI null default' UNION
+SELECT 'ANSI nulls' UNION  SELECT 'ANSI padding' UNION  SELECT 'ANSI warnings'UNION  SELECT 'arithabort'UNION  SELECT 'auto create statistics'UNION  SELECT 'auto update statistics'UNION  SELECT 'autoclose'UNION  SELECT 'autoshrink'UNION  SELECT 'concat null yields null'UNION  SELECT 'cursor close on commit'UNION  SELECT 'db chaining'UNION  SELECT 'dbo use only'UNION  SELECT 'default to local cursor'UNION  SELECT 'merge publish'UNION  SELECT 'numeric roundabort'UNION  SELECT 'offline'UNION  SELECT 'published'UNION  SELECT 'quoted identifier'UNION  SELECT 'read only'UNION  SELECT 'recursive triggers'UNION  SELECT 'select into/bulkcopy'UNION  SELECT 'single user' UNION  SELECT 'subscribed' UNION  SELECT 'torn page detection' UNION  SELECT 'trunc. log on chkpt.'
+
+
+Set     @thisbase = '';
+Set     @lastbase = '';
+
+/*********BEGIN: WHILE loop#2 begins which RUNS for every online Db: 1.DB Options calc ******/
+while (exists(Select top 1 [name] 
+                from master.sys.databases 
+                where [name] > @lastbase 
+                and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion') 
+  				and state_desc='online'
+				AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+                order by [name]))
+begin -- Start of while loop#2
+				Select top 1 @thisbase=[name],
+							@ONLINE=case when state_desc='online' then 1 Else 0 END,
+							 @SingleUser=case when user_Access=1 then 1 Else 0 END 
+				 from master.sys.databases 
+				 where [name] > @lastbase 
+				 and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion') 
+				 AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+				 and state_desc='online'
+				 order by [name];
+		/************BEGIN: updating showfilestats for EACH DB  ******/
+		if  (@ONLINE = 1 and @SingleUser=0)
+			begin -- only if database is onLine
+				truncate table tempdb..HealthCheckFileSpace;
+				insert tempdb..HealthCheckFileSpace EXEC ('Use ['+@thisbase+'];dbcc showfilestats with NO_INFOMSGS')
+				
+				Select @TotalExtents = sum(TotalExtents), 
+					   @UsedExtents = sum(UsedExtents)
+					from tempdb..HealthCheckFileSpace;
+					
+				Set @serverTotalExtents=@serverTotalExtents+@TotalExtents;
+				Set @ServerUsedExtents =@ServerUsedExtents +@UsedExtents;
+			
+				insert into tempdb..HealthCheckReport
+				   Select @Servername + '.' + @thisbase as Scope,
+						  'dbcc showfilestats' as Source,
+						  'Data file space = ' + ltrim(str((sum(TotalExtents)*cast(65536 as bigint)/(1024*1024)), 15))+'MB' as Optionname,
+						  ltrim(str(((sum(TotalExtents) - sum(UsedExtents))*1.0/sum(TotalExtents))*100,9,0))+'% free' as [Value],'white'
+					 from tempdb..HealthCheckFileSpace;
+			end
+		/************END: updating showfilestats for EACH DB ******/
+			
+		If (DatabasePropertyEx(@thisbase,'IsPublished') > 0)
+			Begin
+			Truncate table tempdb..HealthChecksp_helppublication;
+
+			Execute('Use ['+@thisbase+'];Insert into tempdb..HealthChecksp_helppublication execute sp_helppublication;');
+
+			Insert into tempdb..HealthCheckReport 
+			 select @Servername+'.'+@thisbase as Scope, 
+						  'sp_helppublication'       as Source, 
+						  'name'                     as Optionname,
+						  [name]                     as [Value],'white'
+ 					 from tempdb..HealthChecksp_helppublication;
+			End
+
+		Set @lastbase=@thisbase;
+
+end;  -- Start of while loop#2
+/*********END: WHILE loop#2 begins which RUNS for every online Db: 1.DB Options calc ******/
+
+/*** BEGIN: INFORMATION ON Volumes ***********/
+Truncate table tempdb..HealthCheckFixedDrives;
+
+Insert	into tempdb..HealthCheckFixedDrives execute master..xp_fixeddrives;
+
+Insert into tempdb..HealthCheckReport 
+       select @Servername      as Scope, 
+              'xp_FixedDrives' as Source,
+              rtrim(Optionname+':\ ') as [name],
+              rtrim(CurrentSetting)+'MB free space'   as [Value],
+              'white'          as Flag
+        from tempdb..HealthCheckFixedDrives;
+
+Truncate table tempdb..HealthCheckDiskVolumes;
+
+Insert into tempdb..HealthCheckDiskVolumes
+       Select Optionname    as Volume,
+              ''            as Volumename,
+              convert(bigint,replace(replace(CurrentSetting,'mb',''),' ',''))*1024*1024 as FreeSpace,
+              0             as TotalBytes,
+              0             as UsedBytes,
+              0             as FreeBytes,
+              0             as DataBytes,
+              0             as LogBytes,
+              0             as OtherBytes,
+              'green'       as Flag
+         from tempdb..HealthCheckFixedDrives;
+
+Declare @LastVolume varchar(260);
+Declare @ThisVolume varchar(260);
+
+Set @LastVolume = '';
+/*********BEGIN: WHILE loop#3 begins which RUNS for every Disk/Volume ******/
+While exists(Select top 1 Volume 
+               from tempdb..HealthCheckDiskVolumes
+              where Volume > @LastVolume)
+	Begin
+
+				Select top 1 @ThisVolume=Volume
+				  from tempdb..HealthCheckDiskVolumes
+				 where Volume > @LastVolume;
+
+				Truncate table tempdb..HealthCheckCmdShell;
+
+				Set @CmdLine = 'FSUtil Volume DiskFree '+@ThisVolume+':'
+				Insert into tempdb..HealthCheckCmdShell Execute master.dbo.xp_cmdshell @CmdLine;
+
+				Update tempdb..HealthCheckDiskVolumes
+				   set TotalBytes = convert(bigint, case isnumeric(substring(Line,32,len(Line)-31))
+													when 1 then substring(Line,32,len(Line)-31)
+														   else substring(Line,32,len(Line)-32)
+													end)
+				  from tempdb..HealthCheckCmdShell
+				 where Line like 'Total # of bytes%' and Volume = @ThisVolume;
+
+				Update tempdb..HealthCheckDiskVolumes
+				   set FreeBytes  = convert(bigint, case isnumeric(substring(Line,32,len(Line)-31))
+													when 1 then substring(Line,32,len(Line)-31)
+														   else substring(Line,32,len(Line)-32)
+													end)
+				from tempdb..HealthCheckCmdShell
+				 where Line is not null
+				   and Line like 'Total # of AVail free bytes%' and Volume = @ThisVolume;
+
+				Update tempdb..HealthCheckDiskVolumes
+				   set UsedBytes = TotalBytes - FreeBytes;
+
+				Truncate table tempdb..HealthCheckCmdShell;
+
+				Set @CmdLine = 'vol '+@ThisVolume+':'
+				Insert into tempdb..HealthCheckCmdShell Execute master.dbo.xp_cmdshell @CmdLine;
+
+				Update tempdb..HealthCheckDiskVolumes
+				   set Volumename = substring(Line,23,len(Line)-22)
+				  from tempdb..HealthCheckCmdShell
+				 where Line is not null
+				   and Line like ' Volume in drive _ is%'
+				   and Volume = @ThisVolume;
+
+				Set @LastVolume = @ThisVolume;
+	End;
+/*********END: WHILE loop#3 begins which RUNS for every Disk/Volume ******/
+
+Update tempdb..HealthCheckDiskVolumes
+   set DataBytes = (Select sum(f.[size]*cast(8192 as bigint)) as bytes
+                      from tempdb..HealthCheckDiskVolumes as hcv
+	                  join master.dbo.sysaltfiles      as f
+                        on f.[filename] like tempdb..HealthCheckDiskVolumes.Volume + ':\%'
+	                 where f.groupid <> 0
+                       and hcv.Volume = tempdb..HealthCheckDiskVolumes.Volume  
+                     group by Volume)
+          
+Update tempdb..HealthCheckDiskVolumes
+    set LogBytes = (Select  sum(f.[size]*cast(8192 as bigint)) as bytes
+                      from tempdb..HealthCheckDiskVolumes as hcv
+	                  join master.dbo.sysaltfiles      as f
+                        on f.[filename] like tempdb..HealthCheckDiskVolumes.Volume + ':\%'
+	                 where f.groupid = 0
+                       and hcv.Volume = tempdb..HealthCheckDiskVolumes.Volume  
+                     group by Volume)
+
+Update tempdb..HealthCheckDiskVolumes
+   set DataBytes = isnull(DataBytes,0),
+       LogBytes  = isnull(LogBytes,0)
+ 
+Update tempdb..HealthCheckDiskVolumes
+   set OtherBytes = TotalBytes - DataBytes - LogBytes - FreeBytes;
+
+insert into tempdb..HealthCheckReport
+            Select @Servername as Scope,
+                  'dbcc showfilestats' as Source,
+                  'Data file space = ' + ltrim(str((@serverTotalExtents*cast(65536 as bigint)/(1024*1024)), 15))+'MB' as Optionname,
+                  ltrim(str(((@serverTotalExtents - @ServerUsedExtents)*1.0/@serverTotalExtents)*100,9,0))+'% free' as [Value],
+                  'white'
+             from tempdb..HealthCheckFileSpace;
+ /*** END: INFORMATION ON Volumes ***********/
+             
+/*** BEGIN: NEW CODE to accomodate T-log backup **********/
+
+insert into tempdb..HealthCheckReport
+       select @Servername + '.' + sd.[name] as Scope,       'msdb.dbo.backupset' as Source,       'Last FULL backup date ' as [name],
+      case 
+      when  max(bs.backup_finish_date) is null then 'Never<br />Immediate Full backup is recommended!' 
+      when datediff(hh,max(bs.backup_finish_date),getdate())>168 then 'Full Backup Missing since Last Week !' +' Last Full Backup:' + convert(varchar(20),max(bs.backup_finish_date),120)  
+      when datediff(hh,max(bs.backup_finish_date),getdate())<=168 then 'Last Full Backup:' + convert(varchar(20),max(bs.backup_finish_date),120)   
+                else max(convert(char(16),bs.backup_finish_date,120)) 
+        end as [Value],
+       case when max(bs.backup_finish_date) is null then 'red' 
+      when datediff(hh,max(bs.backup_finish_date),getdate())>168 then 'yellow'  
+       else 'white' end as [Value]
+  from master.sys.databases as sd
+  left
+  join msdb.dbo.backupset as bs 
+    on bs.database_name=sd.[name]
+ where isnull(type,'D')='D'   
+  and sd.[name] not in ('adventureworks','pubs','northwind','tempdb','SolarWindsOrion') -- Tempdb can not be backed up.
+  and DATABASEPROPERTYEX(sd.[name], 'status') = 'ONLINE'
+  AND DATABASEPROPERTYEX(sd.name,'Updateability') = 'READ_WRITE' 
+ group by sd.name
+ 
+insert into tempdb..HealthCheckReport
+      select @Servername + '.' + sd.[name] as Scope,       'msdb.dbo.backupset' as Source,       'Last T-Log backup date ' as [name],
+      case 
+      when isnull(type,'L')='L' and max(bs.backup_finish_date) is null then 'Never<br />Immediate T-Log backup is recommended!' 
+      when type='L' and datediff(hh,max(bs.backup_finish_date),getdate())>24 then 'T-Log Backup Missing since Last 24Hrs!' +' Last T-Log Backup:' + convert(varchar(20),max(bs.backup_finish_date),120) 
+      when type='L' and datediff(hh,max(bs.backup_finish_date),getdate())<=24 then 'Last T-Log Backup:' + convert(varchar(20),max(bs.backup_finish_date),120)  
+       else max(convert(char(16),bs.backup_finish_date,120))         end as [Value],
+       case when max(bs.backup_finish_date) is null then 'red' 
+       when datediff(hh,max(bs.backup_finish_date),getdate())>24 then 'yellow'
+       else 'white' end as [Value]
+  from master.sys.databases as sd
+  left   join msdb.dbo.backupset as bs 
+    on bs.database_name=sd.[name]
+ where isnull(type,'L')='L'
+and sd.recovery_model_desc='FULL'
+and sd.[name] not in ('adventureworks','pubs','northwind','tempdb','SolarWindsOrion') -- Tempdb can not be backed up.
+and DATABASEPROPERTYEX(sd.[name], 'status') = 'ONLINE'
+AND DATABASEPROPERTYEX(sd.name,'Updateability') = 'READ_WRITE' 
+group by sd.name,bs.type
+/*** END:NEW CODE to accomodate T-log backup **********/
+
+    update tempdb..HealthCheckReport
+           set [name]  = right([name],datalength([name])-3),  
+               [Value] = case when [Value] = '0' then 'Off'
+                              when [Value] = '1' then 'On'
+                              else [Value]
+                         end
+     where Source='ServerProperty' 
+       and [name] like 'Is%';
+
+	update tempdb..HealthCheckReport 
+	   set Flag   = Case when upper(AV.Recommended) = upper(SQLI.[Value])
+                         then 'green'
+			             else AV.Flag 
+                    end,
+          [Value] = case when upper(AV.Recommended) <> upper(SQLI.[Value])
+                         then SQLI.[Value]+ '<br />'+ AV.Recommended+' is Recommended'
+                         else SQLI.[Value]
+                    end                            
+  from tempdb..HealthCheckReport as SQLI 
+  join tempdb..HealthCheckAudit  as AV     on upper(SQLI.[name])= upper(AV.Optionname)
+ where SQLVersion          = @sqlversion
+   and 
+   (upper(SQLI.[name]) not like upper('Recovery model%')    and upper(SQLI.[name])  not like upper('page verify option'))
+    or
+    (SQLI.Scope   not like @Servername+'.master'    and SQLI.Scope   not like @Servername+'.msdb'    and SQLI.Scope   not like @Servername+'.tempdb'    and upper(SQLI.[name])      like upper('Recovery model%'))
+    or
+    (upper(SQLI.Scope)   not like upper(@Servername+'.tempdb')    and upper(SQLI.[name])      like upper('page verify option'));
+
+	update tempdb..HealthCheckReport 
+	   set Flag   = Case when upper('None') = upper(SQLI.[Value])
+                         then 'green'
+			             else AV.Flag 
+                    end,
+          [Value] = case when upper('None') <> upper(SQLI.[Value])
+                         then SQLI.[Value]+ '<br />None is Recommended'
+                         else SQLI.[Value]
+                    end                            
+  from tempdb..HealthCheckReport as SQLI
+  join tempdb..HealthCheckAudit  as AV     on upper(SQLI.[name])    = upper(AV.Optionname)
+ where upper(SQLVersion)     = upper(@sqlversion)
+   and upper(SQLI.Scope)  like upper(@Servername+'.tempdb')
+   and upper(SQLI.[name]) like upper('page verify option');
+
+update tempdb..HealthCheckReport 
+	   set Flag   = Case when upper('simple') = upper(SQLI.[Value])
+                         then 'green'
+			             else AV.Flag 
+                    end,
+          [Value] = case when upper('simple') <> upper(SQLI.[Value])
+                         then SQLI.[Value]+ '<br />Simple is Recommended'
+                         else SQLI.[Value]
+                    end                            
+  from tempdb..HealthCheckReport as SQLI
+  join tempdb..HealthCheckAudit    as AV on upper(SQLI.[name])= upper(AV.Optionname)
+ where SQLVersion     = @sqlversion
+   and (SQLI.Scope like @Servername+'.master'     or SQLI.Scope  like @Servername+'.msdb')
+   and (SQLI.[name] like 'Recovery model%' or SQLI.[name] like 'recovery model%');
+
+Update tempdb..HealthCheckReport 
+	   set Flag   = 'yellow',
+          [Value] = tempdb..HealthCheckReport.[Value]
+                  + '<br />database &lt;&gt; instance?'
+  from tempdb..HealthCheckReport
+  join tempdb..HealthCheckReport as s
+    on s.[Value] <> tempdb..HealthCheckReport.[Value]
+ where s.[name] = 'Collation'
+   and s.Scope  = @Servername
+   and tempdb..HealthCheckReport.[name] = 'collation name'
+
+/************ BEGIN : New code for Latest SPACs ********/ 
+Update tempdb..HealthCheckReport 
+	   set Flag   = Case when(@@Version like '10.5%' and [Value] >= 'RTM') 
+							or (@@Version like '10.0%'  and [Value] >= 'SP2') 
+			               or(@sqlversion = 9 and [Value] >= 'SP4')
+                           or (@@Version like '%8.00.2039%')
+                              then 'green'
+                              else 'yellow' 
+                    end,
+          [Value] = Case when(@@Version like '10.5%' and [Value] >= 'RTM')  
+			               	or (@@Version like '10.0%'  and [Value] >= 'SP2') 
+			               or(@sqlversion = 9 and [Value] >= 'SP4')
+                           or (@@Version like '%8.00.2039%')
+                           then [Value]
+                              else [Value]+'<br />Consider updating Latest Service Pack'
+                    end                            
+ where[name]='productlevel';
+/************ END: New code for Latest SPACs ********/
+
+Update tempdb..HealthCheckReport 
+	   set[Value] = Case when[Value] like '4.0%' then 'Windows NT '   + [Value]
+			             when[Value] like '5.0%' then 'Windows 2000 ' + [Value]
+			             when[Value] like '5.1%' then 'Windows XP '   + [Value] + '<br />Server O/S Recommended' 
+			             when[Value] like '5.2%' then 'Windows 2003 ' + [Value] 
+			             when[Value] like '6.0%' then 'Windows 2008 ' + [Value]
+			             when[Value] like '6.%' then 'Windows 2008/Vista later ' + [Value]  -- added newly 
+                                                 else [Value]
+                    end,
+	       Flag   = Case when[Value] like '4.0%' then 'red'
+			             when[Value] like '5.0%' then 'green'
+			             when[Value] like '5.1%' then 'yellow' 
+			             when[Value] like '5.2%' then 'green' 
+			             when[Value] like '6.0%' then 'green'
+			            when[Value] like '6.%' then 'green'  
+                                                 else [Value]
+                    end                            
+ where[name]='WindowsVersion';
+
+/***********  START of NEW code: only 1 line per failed job.****************************/
+insert into tempdb..HealthCheckReport
+Select @@Servername as Scope,   'msdb.dbo.sysjobhistory' as Source,       convert(char(19),
+      convert(datetime,substring(replace(str(h.run_date,8),' ','0'),1,4)
+                  +'-'+substring(replace(str(h.run_date,8),' ','0'),5,2)
+                  +'-'+substring(replace(str(h.run_date,8),' ','0'),7,2)
+                  +' '+substring(replace(str(h.run_time,6),' ','0'),1,2)
+                  +':'+substring(replace(str(h.run_time,6),' ','0'),3,2)
+                  +':'+substring(replace(str(h.run_time,6),' ','0'),5,2)),
+      120)+'<br />' + rtrim(convert(varchar(130),j.name)) +'<br /> failed after ' +
+      ltrim(str(h.run_duration,15)) + ' seconds' as [name],
+      --server,
+      rtrim(convert(varchar(500),h.message)) as [Value],
+      case when convert(datetime, convert(char(8),h.run_date)) > dateadd(week,-1, getdate()) then 'red'
+           else 'yellow'
+           end as Flag
+ from msdb.dbo.sysjobs       as j
+ join msdb.dbo.sysjobhistory as h
+   on j.job_id = h.job_id
+   join(select  job_id,max(instance_id) top_instance_id from msdb.dbo.sysjobhistory group by job_id) P on P.job_id=j.job_id  and P.top_instance_id=  h.instance_id
+where h.step_id = 0
+  and h.run_status = 0
+  and convert(datetime, convert(char(8),h.run_date)) > dateadd(week,-4, getdate())
+  and h.server = @@Servername
+/***********  END of NEW code: only 1 line per failed job.****************************/
+
+declare @lastname varchar(100);
+declare @thisname varchar(100);
+declare @thisValue varchar(100);
+declare @thisFlag varchar(30);
+declare @column int;
+
+declare @hcends datetime;
+set @hcends = getdate();
+
+Select 'Health Check ends @ ' + convert(varchar(19),@hcends,121);
+
+Select ' -->';
+Select '<table width="100%" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+Select '<tr>';
+Select '<td rowspan="2" width="5%">';
+Select '<img src="http://www.datAvail.com/images/databaseadministrationlogo.gif"></img>';
+Select '</td>';
+Select '<td  colspan="2" class="headingcaption">'+@Servername+' Instance and Database Health Check</td>';
+Select '</tr>';
+Select '<tr>';
+Select '<td class="headinglabel" nowrap><b>Report&nbsp;Date&nbsp;:&nbsp;</b></td>';
+Select '<td class="headingValue" nowrap>'+convert(char(19),getdate(),100)+'</td>';
+Select '</tr>';
+Select '</table>';
+Select '<br>';
+
+Select '<table class="whitetable" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+Select '<Thead>';
+Select '<tr>';
+Select '<th class="whitecaption" colspan="3">'+@Servername+' Table of Contents</TD>';
+Select '</tr>';
+Select '</thead>';
+Select '<tbody>';
+
+if exists (select Flag from tempdb..HealthCheckReport where Flag='red' and [Value] is not null)
+	Select '<tr><td class="tocred" colspan="2"><a href="#red">!!! Action Recommended for '+@Servername+' !!!</a></td></tr>'
+
+if exists (select Flag from tempdb..HealthCheckReport where Flag='yellow' and [Value] is not null)
+	Select '<tr><td class="tocyellow" colspan="2"><a href="#yellow">?? Review Recommended for '+@Servername+' ??</a></td></tr>'
+
+Select '<tr><td colspan="2" class="whitelabel"><a href="#instance">SQL Server Instance '+@Servername+' Information</a></td></tr>'
+Set @lastbase='';
+While (exists(Select top 1 [name] 
+                 from master.sys.databases 
+                where [name] > @lastbase 
+                  and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion')
+				  and DATABASEPROPERTYEX([name], 'status') = 'ONLINE'
+				  AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+                 order by [name]))
+	begin 
+	Select top 1 @thisbase=[name] 
+      from master.sys.databases 
+     where [name] > @lastbase        
+      and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion') 
+	  AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+	  and DATABASEPROPERTYEX([name], 'status') = 'ONLINE'
+     order by [name];
+
+	Select '<tr>
+<td width="5%" class="whitelabel"><a href="#'+rtrim(@thisbase)+'">'+rtrim(@thisbase)+'</a></td>'
+    SELECT '<td class="whiteValue">Database Health : ' +
+	      -- replace(str((((redCount * 0.00)+(yellowCount * 0.50)+(greenCount * 0.95))/(redCount+yellowCount+greenCount)) * 100,2),' ','0') 
+	         isnull(replace(str(((redCount * 0.00)+(yellowCount * 0.50)+(greenCount * 0.95)) /NULLIF((redCount+yellowCount+greenCount),0) * 100 ,2),' ','0') ,'can''t calculate due to known issue.possibly the DB was not cleanly shutdown/AutoClose(sys.databases)')	       +
+	       '%</td></tr>'
+	FROM (SELECT COUNT(1) as redCount    
+            FROM  tempdb..HealthCheckReport 
+           WHERE Flag = 'red' 
+             and Scope=@Servername+'.'+@thisbase) as red,
+	     (SELECT COUNT(1) as yellowCount 
+            FROM  tempdb..HealthCheckReport 
+           WHERE Flag = 'yellow' 
+             and Scope=@Servername+'.'+@thisbase) as yellow,
+	     (SELECT COUNT(1) as greenCount  
+            FROM  tempdb..HealthCheckReport 
+           WHERE Flag = 'green' 
+             and Scope=@Servername+'.'+@thisbase) as green;
+	
+    Set @lastbase=@thisbase;
+
+ 	end;
+	Select '</table>';
+	Select '<br>';
+
+if exists (select Flag from tempdb..HealthCheckReport where Flag='red' and [Value] is not null)
+	begin
+    select '<div class="newpage">&nbsp;</div>';
+	Select '<table class="redtable" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+	Select '<thead>';
+	Select '<tr>';
+	Select '<th class="redcaption" colspan="3"><a name="red">!!! Action Recommended for '+@Servername+' !!!</th>';
+	Select '</tr>';
+	Select '<tr>';
+    Select '<th class="redhead" width="5%">Instance.Database</th>';
+	Select '<th class="redhead" width="25%">Health Indicator</th>';
+	Select '<th class="redhead" width="*">Notes and recommendations</th>';
+	Select '</tr>';
+	Select '</thead>';
+	Select '<tbody>';
+
+	Select '<tr>
+<td class="redlabel" nowrap>'+rtrim(Scope)+'</td>
+<td class="redlabel">'+rtrim(isnull([name],'n/a'))+'</td>
+<td class="redeven">'+rtrim(isnull([Value],'n/a'))+'</td>
+</tr>'
+	  from tempdb..HealthCheckReport 
+     where Flag='red'
+       and [Value] is not null
+     order by Scope,Source,[name]; -- select * from tempdb..HealthCheckReport where Flag='red';
+	Select '</tbody>';
+	Select '</table>';
+	Select '<br>';
+    end;
+
+if exists (select Flag from tempdb..HealthCheckReport where Flag='yellow' and [Value] is not null) 
+	begin
+    select '<div class="newpage">&nbsp;</div>';
+	Select '<table class="yellowtable" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+	Select '<Thead>';
+	Select '<tr>';
+	Select '<th class="yellowcaption" colspan="3"><a name="yellow">?? Review recommended for '+@Servername+' ??</th>';
+	Select '</tr>';
+	Select '<tr>';
+    Select '<th class="yellowhead" width="5%">Instance.Database</th>';
+	Select '<th class="yellowhead" width="25%">Health Indicator</th>';
+	Select '<th class="yellowhead" width="*">Notes and recommendations</th>';
+	Select '</tr>';
+	Select '</thead>';
+	Select '<tbody>';
+	Select '<tr>
+<td class="yellowlabel" nowrap>'+rtrim(Scope)+'</td>
+<td class="yellowlabel">'+rtrim(isnull([name],'n/a'))+'</td>
+<td class="yelloweven">'+rtrim(isnull([Value],'n/a'))+'</td></tr>'
+	  from tempdb..HealthCheckReport 
+     where Flag='yellow'
+       and [Value] is not null
+     order by Scope,Source,[name]; -- select * from tempdb..HealthCheckReport where Flag='yellow';
+	Select '</tbody>';
+	Select '</table>';
+	Select '<br>';
+    end;
+
+select '<div class="newpage">&nbsp;</div>';
+
+Select '<table class="whitetable" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+Select '<Thead>';
+Select '<tr>';
+Select '<th class="whitecaption" colspan="8"><a name="instance">SQL Server Instance '+@Servername+'</TD>';
+Select '</tr>';
+Select '</thead>';
+Select '<tbody>';
+Select '<tr>
+<td class="whitelabel" colspan="2">'+rtrim(isnull([name],'n/a'))+'</td>
+<td class="'+rtrim(Flag)+'Value" colspan="6">'+rtrim(isnull([Value],'n/a'))+'</td>
+</tr>'
+  from tempdb..HealthCheckReport 
+ where [Value] is not null
+   and Scope = @Servername
+   and(Source = 'tempdb creation date'
+--    or Source = 'xp_fixeddrives'
+    or Source = 'dbcc showfilestats')
+ order by 
+       case
+       when Source = 'tempdb creation date' then 1
+       when Source = 'dbcc showfilestats'   then 2
+--       when Source = 'xp_fixeddrives'       then 3
+       end, 
+      [name]; 
+
+		If @OSVersion < 5.1
+			Select '<tr>
+<th class="whiteheadedge"  colspan="1">Volume</th>
+<th class="whitehead"      colspan="4">Volume name</th>
+<th class="whiteheadright" colspan="1">Data MB</th>
+<th class="whiteheadright" colspan="1">Log MB</th>
+<th class="whiteheadright" colspan="1">Free MB</th>
+</tr>'
+		else
+			Select '<tr>
+<th class="whiteheadedge"  colspan="1">Volume</th>
+<th class="whitehead"      colspan="3">Volume name</th>
+<th class="whiteheadright" colspan="1">Total MB</th>
+<th class="whiteheadright" colspan="1">Data MB</th>
+<th class="whiteheadright" colspan="1">Log MB</th>
+<th class="whiteheadright" colspan="1">Free MB</th>
+</tr>';
+
+		If @OSVersion < 5.1
+			Select '<tr>
+<td class="whitelabel" colspan="1">'+rtrim(Volume)+':\'+'</td>
+<td class="whiteValue" colspan="4">'+rtrim(Volumename)+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(DataBytes/(1024*1024),20))+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(LogBytes/(1024*1024),20))+'</td>
+<td class="'+rtrim(Flag)+'right" colspan="1">'+ltrim(str(FreeSpace/(1024*1024),20))+'</td>
+</tr>' 
+	          from tempdb..HealthCheckDiskVolumes
+             order by Volume
+		else
+			Select '<tr>
+<td class="whitelabel" colspan="1">'+rtrim(Volume)+':\'+'</td>
+<td class="whiteValue" colspan="3">'+rtrim(Volumename)+'</td>
+<td Class="whiteright" colspan="1">'+ltrim(str(TotalBytes/(cast(1024 as bigint)*1024),20))+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(DataBytes/(1024*1024),20))+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(LogBytes/(1024*1024),20))+'</td>
+<td class="'+rtrim(Flag)+'right" colspan="1">'+ltrim(str(FreeBytes/(1024*1024),20))+'</td>
+</tr>' 
+	          from tempdb..HealthCheckDiskVolumes
+             order by Volume;
+	
+    if  @sqlversion > 8
+		begin 
+
+		Select '<tr>
+<th class="whiteheadedge" width="*" colspan="3">Endpoint</th>
+<th class="whitehead" width="*" colspan="2">Owner</th>
+<th class="whitehead" width="*" colspan="1">Protocol</th>
+<th class="whitehead" width="*" colspan="1">Type</th>
+<th class="whitehead" width="*" colspan="1">State</th>
+</tr>';
+
+		select '<tr>
+<td class="whitelabel" colspan="3">'+rtrim(e.[name])+cast(case e.is_admin_endpoint when 0 then '' else '(Admin)' end as varchar(10))+'</td>
+<td Class="whiteValue" colspan="2">'+rtrim(suser_name(e.principal_id))+'</td>
+<td class="whiteValue" colspan="1">'+rtrim(e.protocol_desc collate SQL_Latin1_General_CP1_CI_AS)+'</td>
+<td class="whiteValue" colspan="1">'+rtrim(e.type_desc collate SQL_Latin1_General_CP1_CI_AS)+'</td>
+<td class="whiteValue" colspan="1">'+rtrim(e.state_desc collate SQL_Latin1_General_CP1_CI_AS)+'</td>
+</tr>' 
+	     from sys.endpoints     as e
+		end;
+
+
+
+Select '<tr>';
+Select '<th class="whiteheadedge" width="*" colspan="8">'+@Servername+' Properties</th>';
+Select '</tr>';
+
+set @lastname='';
+set @column=1;
+while (exists(Select top 1 [name]
+                from tempdb..HealthCheckReport 
+               where [Value] is not null
+                 and Scope = @Servername
+				 and Source = 'ServerProperty'
+                 and [name] > @lastname
+	           order by [name]))
+	begin 
+	Select top 1 @thisname =[name],
+                 @thisValue=[Value],
+                 @thisFlag =Flag
+      from tempdb..HealthCheckReport 
+	 where [Value] is not null
+	   and Scope  = @Servername
+       and Source = 'ServerProperty'
+       and [name] > @lastname
+	 order by [name];
+ 
+    if @column=1
+		begin
+		Select '<tr>';
+        end;
+	 
+    Select	'<td class="whitelabel" width="15%">'+rtrim(isnull(@thisname,'n/a'))+'</td>
+<td class="'+rtrim(@thisFlag)+'Value" width="10%">'+rtrim(isnull(@thisValue,'n/a'))+'</td>';
+	if @column=4
+		begin
+		Select '</tr>';
+        set @column=0;
+		end
+
+	Set @column=@column+1;
+    Set @lastname=@thisname;
+	end;
+
+if @column=2
+   Select '<td colspan="6" class="whitelabel">&nbsp;</td>';
+if @column=3
+   Select '<td colspan="4" class="whitelabel">&nbsp;</td>';
+if @column=4
+   Select '<td colspan="2" class="whitelabel">&nbsp;</td>';
+
+Select '</tr>';
+
+
+Select '<tr>';
+Select '<th class="whiteheadedge" width="*" colspan="8">'+@Servername+' Configuration Settings</th>';
+Select '</tr>';
+
+set @lastname='';
+set @column=1;
+while (exists(Select top 1 [name]
+                from tempdb..HealthCheckReport 
+               where [Value] is not null
+                 and Scope = @Servername
+                 and(Source = 'sys.configurations'
+                  or Source = 'sp_Configure')
+                 and [name] > @lastname
+	           order by [name]))
+	begin 
+	Select top 1 @thisname =[name],
+                 @thisValue=[Value],
+                 @thisFlag =Flag
+      from tempdb..HealthCheckReport 
+     where [Value] is not null
+       and Scope = @Servername
+       and (Source = 'sys.configurations'
+        or Source = 'sp_Configure')
+       and [name] > @lastname
+	 order by [name];
+ 
+    if @column=1
+		begin
+		Select '<tr>';
+        end;
+    Select	'<td class="whitelabel" width="15%">'+rtrim(isnull(@thisname,'n/a'))+'</td>
+<td class="'+rtrim(@thisFlag)+'Value" width="10%">'+rtrim(isnull(@thisValue,'n/a'))+'</td>';
+	if @column=4
+		begin
+		Select '</tr>';
+        set @column=0;
+		end
+
+	Set @column=@column+1;
+    Set @lastname=@thisname;
+	end;
+
+if @column=2
+   Select '<td colspan="6" class="whitelabel">&nbsp;</td>';
+if @column=3
+   Select '<td colspan="4" class="whitelabel">&nbsp;</td>';
+if @column=4
+   Select '<td colspan="2" class="whitelabel">&nbsp;</td>';
+
+Select '</tr>';
+
+Select '<tr>';
+Select '<th class="whiteheadedge" colspan="8" width="*">'+@Servername+' Operating System Environment</th>';
+Select '</tr>';
+
+set @lastname='';
+set @column=1;
+while (exists(Select top 1 [name]
+                from tempdb..HealthCheckReport 
+               where [Value] is not null
+                 and Scope = @Servername
+				 and Source = 'xp_msver'
+                 and [name] > @lastname
+	           order by [name]))
+	begin 
+	Select top 1 @thisname =[name],
+                 @thisValue=[Value],
+                 @thisFlag =Flag
+      from tempdb..HealthCheckReport 
+     where [Value] is not null
+       and Scope = @Servername
+       and Source = 'xp_msver'
+       and [name] > @lastname
+	 order by [name];
+ 
+    if @column=1
+		begin
+		Select '<tr>';
+        end;
+    Select	'<td class="whitelabel" width="15%">'+rtrim(isnull(@thisname,'n/a'))+'</td>
+<td class="'+rtrim(@thisFlag)+'Value" width="10%">'+rtrim(isnull(@thisValue,'n/a'))+'</td>';
+	if @column=4
+		begin
+		Select '</tr>';
+        set @column=0;
+		end
+
+	Set @column=@column+1;
+    Set @lastname=@thisname;
+	end;
+
+if @column=2
+   Select '<td colspan="6" class="whitelabel">&nbsp;</td>';
+if @column=3
+   Select '<td colspan="4" class="whitelabel">&nbsp;</td>';
+if @column=4
+   Select '<td colspan="2" class="whitelabel">&nbsp;</td>';
+
+Select '</tr>';
+
+if exists(Select * 
+            from tempdb..HealthCheckReport 
+           where [Value] is not null
+             and Scope = @Servername
+             and Source = 'msdb.dbo.sysjobhistory')
+	begin
+	Select '<tr>';
+	Select '<th class="whiteheadedge" colspan="8" width="*">'+@Servername+' Execution Errors</th>';
+	Select '</tr>';
+	Select '<tr>
+<td class="whitelabel" colspan="2">'+rtrim(isnull([name],'n/a'))+'</td>
+<td class="'+rtrim(Flag)+'Value" colspan="6">'+rtrim(isnull([Value],'n/a'))+'</td>
+</tr>'
+	  from tempdb..HealthCheckReport 
+     where [Value] is not null
+       and Scope = @Servername
+       and Source = 'msdb.dbo.sysjobhistory'
+     order by [name] desc; 
+	end
+
+Select '</table>';
+Select '<br>';
+
+set @lastbase='';
+while (exists(Select top 1 [name] 
+                 from master.sys.databases 
+                where [name] > @lastbase 
+                  and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion')
+				  and DATABASEPROPERTYEX([name], 'status') = 'ONLINE'
+				  AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE' 
+                 order by [name]))
+	begin 
+	Select top 1 @thisbase=[name] 
+      from master.sys.databases 
+     where [name] > @lastbase 
+       and [name] not in ('adventureworks','pubs','northwind','SolarWindsOrion')
+	   AND DATABASEPROPERTYEX(name,'Updateability') = 'READ_WRITE'  
+	  and DATABASEPROPERTYEX([name], 'status') = 'ONLINE'
+     order by [name];
+
+	Select top 1 @thisbase=[name], 
+                @ONLINE=case when state_desc='online' then 1 Else 0 END,
+                 @SingleUser=case when user_Access=1 then 1 Else 0 END 
+		  from master.sys.databases 
+		 where [name] = @thisbase 
+
+    select '<div class="newpage">&nbsp;</div>';
+
+    Select '<table class="whitetable" cellSpacing="'+ltrim(str(@Cellspacing,5))+'" cellPadding="5">';
+	Select '<Thead>';
+	Select '<tr>';
+	Select '<th class="whitecaption" colspan="8"><a name="'+@thisbase+'">'+@Servername+'.'+@thisbase+'</TD>';
+	Select '</tr>';
+	Select '</thead>';
+	Select '<tbody>';
+	Select '<tr>
+<td class="whitelabel" colspan="2">'+rtrim(isnull([name],'n/a'))+'</td>
+<td class="'+rtrim(Flag)+'Value" colspan="6">'+rtrim(isnull([Value],'n/a'))+'</td>
+</tr>'
+	  from tempdb..HealthCheckReport 
+     where [Value] is not null
+	   and Scope = @Servername+'.'+@thisbase
+	   and Source <> 'sys.databases'
+       and Source <> 'dbcc showcontig'
+       and Source <> 'sp_DBOption'
+       and Source <> 'DatabasePropertyEx'
+	   and Source <> 'sp_DBCmptLevel'
+       and Source <> 'Creation Date'
+       and Source <> 'master.dbo.sysdatabases'
+	 order by Source, [name];
+
+    if  @ONLINE =1
+    and @SingleUser = 0
+		begin 
+
+		Select '<tr>
+<th class="whiteheadedge" width="*" colspan="1">Group</th>
+<th class="whitehead" width="*" colspan="2">name</th>
+<th class="whiteheadright" width="*" colspan="1">Size (MB)</th>
+<th class="whitehead" width="*" colspan="4">Path</th>
+</tr>';
+
+    if @sqlversion < 9
+		set @sql= 'Use ['+@thisbase+'];
+	Select ''<tr>''+
+		   ''<td class="whitelabel" colspan="1">''+rtrim(isnull(g.groupname,''&nbsp;''))+ 
+		   case when g.status/16 = 1 
+				then '' (Default)'' 
+				else '''' 
+			end +''</td>''+
+		   ''<td class="whitelabel" colspan="2">''+rtrim(f.[name])+''</td>''+
+		   ''<td class="whiteright" colspan="1">''+ltrim(str(((f.size * cast(8192 as bigint)) /(1024*1024)),15))+''</td>''+
+		   ''<td class="whiteValue" colspan="4">''+rtrim(f.[filename])+''</td></tr>''
+	  from sysfilegroups as g
+	  right
+	  join sysfiles      as f
+		on g.groupid = f.groupid 
+	 order by case when g.groupname is null then 1 else 0 end, g.groupid, f.name';	
+else
+		set @sql= 'Use ['+@thisbase+'];
+	Select ''<tr>''+
+		   ''<td class="whitelabel" colspan="1">''+rtrim(isnull(g.[name],''&nbsp;''))+ 
+		   case when g.filegroup_guid is null and g.[name] is not null 
+				then '' (Default)'' 
+				else '''' 
+			end +''</td>''+
+		   ''<td class="whitelabel" colspan="2">''+rtrim(f.[name])+''</td>''+
+		   ''<td class="whiteright" colspan="1">''+ltrim(str(((f.[size] * cast(8192 as bigint)) /(1024*1024)),15))+''</td>''+
+		   ''<td class="''+case when f.state >0 then ''red'' else ''green'' end+''Value" colspan="4">''+rtrim(f.physical_name)+
+            case when f.state >=0 then '' (''+f.state_desc collate SQL_Latin1_General_CP1_CI_AS +'')'' else '''' end+
+           ''</td></tr>''
+	  from sys.filegroups as g
+  right
+  join sys.database_files as f
+    on f.data_space_id  = g.data_space_id 
+	 order by case when g.[name] is null then 1 else 0 end, g.data_space_id, f.name';
+
+ 	exec (@sql);
+
+		end;
+
+	if exists(Select top 1 Flag
+		        from tempdb..HealthCheckTableInfo 
+               where Servername    = @Servername
+                 and Databasename  = @thisbase
+                 and CountPages   >= @scanpages
+                 and LogicalFrag  >  @ShowLogicalFrag
+                 and IndexId      >  0
+	           order by Tablename, Indexname)
+		begin
+
+		Select '<tr>
+<th class="whiteheadedge"  colspan="5">Table.Index 
+<th class="whiteheadright" colspan="1">Rows</th>
+<th class="whiteheadright" colspan="1">Size &gt;= '+ltrim(str((@scanpages*cast(8192 as bigint)/(1024*1024)),15))+'MB</th>
+<th class="whiteheadright" colspan="1">Logical Fragmentation &gt; '+ltrim(str(@ShowLogicalFrag,5))+'%</th>
+</tr>';
+
+		Select '<tr>
+<td class="whitelabel" colspan="5">'+rtrim(Tablename)+'.'+rtrim(Indexname)+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(Rows,15))+'</td>
+<td class="whiteright" colspan="1">'+ltrim(str(mb,20,3))+'</td>
+<td class="'+rtrim(Flag)+'right" colspan="1">'+ltrim(str(LogicalFrag,5))+'</td>
+</tr>'
+		  from tempdb..HealthCheckTableInfo 
+         where Servername    = @Servername
+           and Databasename  = @thisbase
+           and CountPages   >= @scanpages
+           and LogicalFrag  >  @ShowLogicalFrag
+           and IndexId      >  0
+	     order by Tablename, IndexId;
+--
+--		Select '<tr>
+--<td class="whitelabel" colspan="5">&nbsp;</td>
+--<td class="whiteblank" colspan="1">&nbsp;</td>
+--<td class="whiteright" colspan="1">'+ltrim(str(sum(mb),20,3))+'</td>
+--<td class="whiteblank" colspan="1">&nbsp;</td>
+--</tr>'
+--		  from tempdb..HealthCheckTableInfo 
+--         where Servername    = @Servername
+--           and Databasename  = @thisbase
+--           and CountPages   >= @scanpages
+--           and LogicalFrag  >  @ShowLogicalFrag
+--           and IndexId      >  0;
+
+		end;
+
+	Select '<tr>
+<th class="whiteheadedge" width="*" colspan="8">'+@thisbase+' Configuration Settings</th>
+</tr>';
+
+	set @lastname='';
+	set @column=1;
+	while (exists(Select top 1 [name]
+					from tempdb..HealthCheckReport 
+				   where [Value] is not null
+					 and Scope = @Servername+'.'+@thisbase
+					 and(Source = 'sys.databases'
+                      or Source = 'sp_DBOption'
+                      or Source = 'DatabasePropertyEx'
+                      or Source = 'sp_DBCmptLevel'
+                      or Source = 'Creation Date'
+                      or Source = 'master.dbo.sysdatabases')
+					 and [name] > @lastname
+				   order by [name]))
+		begin 
+		Select top 1 @thisname =[name],
+					 @thisValue=[Value],
+					 @thisFlag =Flag
+		  from tempdb..HealthCheckReport 
+		 where [Value] is not null
+		   and Scope = @Servername+'.'+@thisbase
+		   and(Source = 'sys.databases'
+            or Source = 'sp_DBOption'
+            or Source = 'DatabasePropertyEx'
+            or Source = 'sp_DBCmptLevel'
+            or Source = 'Creation Date'
+            or Source = 'master.dbo.sysdatabases')
+		   and [name] > @lastname
+		 order by [name];
+	 
+		if @column=1
+			begin
+			Select '<tr>';
+			end;
+		Select	'<td class="whitelabel" width="15%">'+rtrim(isnull(@thisname,'n/a'))+'</td>
+<td class="'+rtrim(@thisFlag)+'Value" width="10%">'+rtrim(isnull(@thisValue,'n/a'))+'</td>';
+		if @column=4
+			begin
+			Select '</tr>';
+			set @column=0;
+			end
+
+		Set @column=@column+1;
+		Set @lastname=@thisname;
+		end;
+
+	if @column=2
+	   Select '<td colspan="6" class="whitelabel">&nbsp;</td>';
+	if @column=3
+	   Select '<td colspan="4" class="whitelabel">&nbsp;</td>';
+	if @column=4
+	   Select '<td colspan="2" class="whitelabel">&nbsp;</td>';
+
+	Select '</tr>';
+
+	Select '</table>';
+	Select '<br>';
+
+    Set @lastbase=@thisbase;
+
+ 	end;
+
+Select '<p class="footnote">';
+Select 'Version : 4.3.1<br/>';
+Select '&copy; 2008&mdash;'+str(year(getdate()),4)+' datAvail Corporation.<br/>';
+Select 'This is intellectual property of datAvail Corporation;.<br/>';
+Select 'Any use or modification without prior notification and permission is illegal and will be prosecuted.';
+Select '</p>';
+
+Select '</body>';
+Select '</html>';
+
+---------------------------------------------------
+--RESET THE XPCMDSHELL STATE TO ORGINAL STATE
+----------------------------------------------------
+PRINT '<! --- '
+	
+IF (Convert(float,LEFT(CONVERT(VARCHAR(10),SERVERPROPERTY('ProductVersion')),2)) >= '9')
+BEGIN
+
+IF NOT EXISTS( select * from #Configuration where  comment = 'Enable or disable command shell'  and value = 1)
+	Begin
+	
+			IF (SELECT value from #Configuration  where  comment = 'show advanced options')= 0
+			BEGIN			
+						
+					EXEC sp_configure 'xp_cmdshell',0
+					RECONFIGURE with override
+					EXEC sp_configure 'show advanced options',0
+					RECONFIGURE with override	
+			END
+			ELSE 
+				BEGIN
+					EXEC sp_configure 'xp_cmdshell',0
+					RECONFIGURE with override
+				END
+			
+	End
+END
+PRINT '-->'
+---------------------------------------------------
+--XPCMDSHELL STATE CHANGED TO ORGINAL STATE
+----------------------------------------------------
+
+END TRY
+BEGIN CATCH
+	SELECT
+        ERROR_NUMBER() AS ErrorNumber,
+        ERROR_SEVERITY() AS ErrorSeverity,
+        ERROR_STATE() AS ErrorState,
+        ERROR_PROCEDURE() AS ErrorProcedure,
+        ERROR_LINE() AS ErrorLine,
+        ERROR_MESSAGE() AS ErrorMessage;
+
+---------------------------------------------------
+--RESET THE XPCMDSHELL STATE IF ANY ERROR FOUND
+----------------------------------------------------
+PRINT '<! --- '
+	
+IF (Convert(float,LEFT(CONVERT(VARCHAR(10),SERVERPROPERTY('ProductVersion')),2)) >= '9')
+BEGIN
+
+IF NOT EXISTS( select * from #Configuration where  comment = 'Enable or disable command shell'  and value = 1)
+	Begin
+	
+			IF (SELECT value from #Configuration  where  comment = 'show advanced options')= 0
+			BEGIN			
+						
+					EXEC sp_configure 'xp_cmdshell',0
+					RECONFIGURE with override
+					EXEC sp_configure 'show advanced options',0
+					RECONFIGURE with override	
+			END
+			ELSE 
+				BEGIN
+					EXEC sp_configure 'xp_cmdshell',0
+					RECONFIGURE with override
+				END
+			
+	End
+END
+PRINT '-->'
+END CATCH;
+
+--CLEANING TEMP Tables related to HealthCheck.
+IF OBJECT_ID('tempdb.dbo.HealthCheckFixedDrives' ) IS NOT NULL DROP TABLE tempdb..HealthCheckFixedDrives
+IF OBJECT_ID('tempdb.dbo.HealthCheckLogSpace' ) IS NOT NULL DROP TABLE tempdb..HealthCheckLogSpace
+IF OBJECT_ID('tempdb.dbo.HealthCheckFileSpace' ) IS NOT NULL DROP TABLE tempdb..HealthCheckFileSpace
+IF OBJECT_ID('tempdb.dbo.HealthCheckTables' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTables
+IF OBJECT_ID('tempdb.dbo.HealthCheckTableRows' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTableRows
+IF OBJECT_ID('tempdb.dbo.HealthCheckIndexes' ) IS NOT NULL DROP TABLE tempdb..HealthCheckIndexes
+IF OBJECT_ID('tempdb.dbo.HealthCheckTableInfo' ) IS NOT NULL DROP TABLE tempdb..HealthCheckTableInfo
+IF OBJECT_ID('tempdb.dbo.HealthCheckAudit' ) IS NOT NULL DROP TABLE tempdb..HealthCheckAudit
+IF OBJECT_ID('tempdb.dbo.HealthCheckDiskVolumes' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDiskVolumes
+IF OBJECT_ID('tempdb.dbo.HealthCheckCmdShell' ) IS NOT NULL DROP TABLE tempdb..HealthCheckCmdShell
+IF OBJECT_ID('tempdb.dbo.HealthCheckReport' ) IS NOT NULL DROP TABLE tempdb..HealthCheckReport
+IF OBJECT_ID('tempdb.dbo.HealthCheckDBOptions' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDBOptions
+IF OBJECT_ID('tempdb.dbo.HealthCheckDBOptionList' ) IS NOT NULL DROP TABLE tempdb..HealthCheckDBOptionList
+IF OBJECT_ID('tempdb.dbo.HealthCheckConfiguration' ) IS NOT NULL DROP TABLE tempdb..HealthCheckConfiguration
+IF OBJECT_ID('tempdb.dbo.HealthCheckSysDatabases' ) IS NOT NULL DROP TABLE tempdb..HealthCheckSysDatabases
+IF OBJECT_ID('tempdb.dbo.HealthChecksp_helppublication' ) IS NOT NULL DROP TABLE tempdb..HealthChecksp_helppublication
+IF OBJECT_ID('tempdb.dbo.HealthCheckMSVer' ) IS NOT NULL DROP TABLE tempdb..HealthCheckMSVer

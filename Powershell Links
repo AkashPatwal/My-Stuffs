@@ -4,7 +4,9 @@ Updating multiple SQL instances simultaneously
 
 https://blogs.msdn.microsoft.com/joscot/2016/04/28/updating-multiple-sql-instances-simultaneously/
 
+DMV for troubleshooting 
 
+https://docs.microsoft.com/en-us/azure/sql-database/sql-database-monitoring-with-dmvs
 
 Update multiple SQL Server systems with PowerShell
 

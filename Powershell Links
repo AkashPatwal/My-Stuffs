@@ -24,3 +24,20 @@ https://www.red-gate.com/simple-talk/sql/database-administration/what-is-sqlpsx/
 Deploy SQL Server in Kubernetes
 
 http://www.centinosystems.com/blog/sql/deploying-sql-server-in-kubernetes/
+
+
+
+CMS Regitser all servers
+
+https://www.mssqltips.com/sqlservertip/2658/using-powershell-to-register-all-sql-instances-into-central-management-server/
+
+
+Patching Automated multiple servers
+
+https://4sysops.com/archives/update-multiple-sql-server-systems-with-powershell/
+
+=======================================================
+
+Registering multiple servers in Central Management Server (CMS) using PowerShell Script
+
+https://blogs.technet.microsoft.com/vipulshah/2011/06/13/registering-multiple-servers-in-central-management-server-cms-using-powershell-script/

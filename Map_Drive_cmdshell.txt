@@ -1,0 +1,3 @@
+ 
+
+EXEC xp_cmdshell 'net use  \\Corpclust02\j$\sql_backup_SPSQL2012 /user:CORP\v-ekalakota admin123$$' 

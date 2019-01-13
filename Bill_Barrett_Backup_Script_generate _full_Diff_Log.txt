@@ -1,0 +1,137 @@
+Bill Barret -- Backup Testing
+
+
+set nocount on
+
+DECLARE @lastFullBackup INT, @lastFullBackupPath VARCHAR(2000), @lastDifferentialBackup INT, @lastDifferentialBackupPath VARCHAR(2000)
+
+DECLARE @i INT, @logBackupPath VARCHAR(1000)
+
+Declare @sourceDb varchar(200) ='TTTTTTT'
+
+declare @DestinationDb varchar(200) ='RestoreDB'
+
+-- remove temp object that might exist
+
+IF OBJECT_ID('tempdb..#MSDBBackupHistory') IS NOT NULL
+
+DROP TABLE #MSDBBackupHistory
+
+CREATE TABLE #MSDBBackupHistory (
+
+id INT IDENTITY(1,1),
+
+backup_start_date DATETIME,
+
+backup_type CHAR(1),
+
+physical_device_name VARCHAR(1000))
+
+INSERT INTO #MSDBBackupHistory (backup_start_date, backup_type, physical_device_name)
+
+SELECT BS.backup_start_date, BS.type, RTRIM(BMF.physical_device_name)
+
+FROM msdb..backupset BS JOIN msdb..backupmediafamily BMF ON BMF.media_set_id=BS.media_set_id
+
+WHERE BS.database_name = @sourceDb
+
+ORDER BY BS.backup_start_date -- dump the last backup first in table
+
+-- get the last Full backup info.
+
+SET @lastFullBackup = (SELECT MAX(id) FROM #MSDBBackupHistory WHERE backup_type='D')
+
+SET @lastFullBackupPath = (SELECT physical_device_name FROM #MSDBBackupHistory WHERE id=@lastFullBackup)
+
+-- Restore the Full backup
+
+PRINT 'RESTORE DATABASE ' + @DestinationDb
+
+PRINT 'FROM DISK=''' + @lastFullBackupPath + ''''
+
+-- IF it's there's no backup (differential or log) after it, we set to 'with recovery'
+
+IF (@lastFullBackup = (SELECT MAX(id) FROM #MSDBBackupHistory))
+
+PRINT 'WITH RECOVERY'
+
+ELSE PRINT 'WITH NORECOVERY'
+
+PRINT 'GO'
+
+PRINT ''
+
+-- get the last Differential backup (it must be done after the last Full backup)
+
+SET @lastDifferentialBackup = (SELECT MAX(id) FROM #MSDBBackupHistory WHERE backup_type='I' AND id > @lastFullBackup)
+
+SET @lastDifferentialBackupPath = (SELECT physical_device_name FROM #MSDBBackupHistory WHERE id=@lastDifferentialBackup)
+
+-- when there's a differential backup after the last full backup create the restore T-SQL commands
+
+IF (@lastDifferentialBackup IS NOT NULL)
+
+BEGIN
+
+-- Restore last diff. backup
+
+PRINT 'RESTORE DATABASE ' + @DestinationDb
+
+PRINT 'FROM DISK=''' + @lastDifferentialBackupPath + ''''
+
+-- If no backup made (differential or log) after it, set to 'with recovery'
+
+IF (@lastDifferentialBackup = (SELECT MAX(id) FROM #MSDBBackupHistory))
+
+PRINT 'WITH RECOVERY'
+
+ELSE PRINT 'WITH NORECOVERY'
+
+PRINT 'GO'
+
+PRINT '' -- new line for readability
+
+END
+
+-- construct the required TRANSACTION LOGs restores
+
+IF (@lastDifferentialBackup IS NULL) -- no diff backup made?
+
+SET @i = @lastFullBackup + 1 -- search for log dumps after the last full
+
+ELSE SET @i = @lastDifferentialBackup + 1 -- search for log dumps after the last diff
+
+-- script T-SQL restore commands from the log backup history
+
+WHILE (@i <= (SELECT MAX(id) FROM #MSDBBackupHistory))
+
+BEGIN
+
+SET @logBackupPath = (SELECT physical_device_name FROM #MSDBBackupHistory WHERE id=@i)
+
+PRINT 'RESTORE LOG ' + @DestinationDb
+
+PRINT 'FROM DISK=''' + @logBackupPath + ''''
+
+-- it's the last transaction log, set to 'with recovery'
+
+IF (@i = (SELECT MAX(id) FROM #MSDBBackupHistory))
+
+PRINT 'WITH RECOVERY'
+
+ELSE PRINT 'WITH NORECOVERY'
+
+PRINT 'GO'
+
+PRINT '' -- new line for readability
+
+SET @i = @i + 1 -- try to find the next log entry
+
+END
+
+-- remove temp objects that exist
+
+IF OBJECT_ID('tempdb..#MSDBBackupHistory') IS NOT NULL
+
+DROP TABLE #MSDBBackupHistory
+

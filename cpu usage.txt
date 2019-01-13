@@ -1,0 +1,99 @@
+deCLARE @ts_now bigint = (SELECT cpu_ticks/(cpu_ticks/ms_ticks)FROM sys.dm_os_sys_info); 
+SELECT TOP(144) SQLProcessUtilization AS [SQL Server Process CPU Utilization],
+SystemIdle AS [System Idle Process],
+100 - SystemIdle - SQLProcessUtilization AS [Other Process CPU Utilization],
+SQLProcessUtilization + (100 - SystemIdle - SQLProcessUtilization) as Total_server_utlization,
+DATEADD(ms, -1 * (@ts_now - [timestamp]), GETDATE()) AS [Event Time]
+FROM (
+SELECT record.value('(./Record/@id)[1]', 'int') AS record_id,
+record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int')
+AS [SystemIdle],
+record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]',
+'int')
+AS [SQLProcessUtilization],
+[timestamp]
+FROM (
+SELECT [timestamp], CONVERT(xml, record) AS [record]
+FROM sys.dm_os_ring_buffers
+WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR'
+AND record LIKE N'%<SystemHealth>%') AS x
+) AS y
+ORDER BY record_id DESC;
+
+=========================
+
+CPU intensive query
+
+SELECT TOP 5 total_worker_time/execution_count AS [Avg CPU Time],  
+Plan_handle, query_plan   
+FROM sys.dm_exec_query_stats AS qs  
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle)  
+ORDER BY total_worker_time/execution_count DESC;  
+GO  
+
+=============================
+
+
+Retrieve the TOP CPU consumer Databases.
+
+
+select DatabaseName=DB_Name(qt.dbid), sum(total_worker_time) 
+from sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+Group by DB_Name(QT.DBID) order by 2 desc
+
+Currently running statements that may be reviewed for performance enhancements
+SELECT substring(text,qs.statement_start_offset/2
+        ,(CASE    
+            WHEN qs.statement_end_offset = -1 THEN len(convert(nvarchar(max), text)) * 2 
+            ELSE qs.statement_end_offset 
+        END - qs.statement_start_offset)/2) 
+    ,qs.plan_generation_num as recompiles
+    ,qs.execution_count as execution_count
+    ,qs.total_elapsed_time - qs.total_worker_time as total_wait_time
+    ,qs.total_worker_time as cpu_time
+    ,qs.total_logical_reads as reads
+    ,qs.total_logical_writes as writes
+FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    LEFT JOIN sys.dm_exec_requests r 
+        ON qs.sql_handle = r.sql_handle
+ORDER BY 3 DESC
+
+==========================
+
+Top 20 most costly queries in terms of Total CPU:
+
+
+SELECT TOP 20
+   qs.sql_handle,
+   qs.execution_count,
+   qs.total_worker_time AS Total_CPU,
+   total_CPU_inSeconds = --Converted from microseconds
+       qs.total_worker_time/1000000,
+   average_CPU_inSeconds = --Converted from microseconds
+       (qs.total_worker_time/1000000) / qs.execution_count,
+   qs.total_elapsed_time,
+   total_elapsed_time_inSeconds = --Converted from microseconds
+       qs.total_elapsed_time/1000000,
+  st.text,
+  qp.query_plan
+FROM
+   sys.dm_exec_query_stats AS qs
+   CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+   CROSS apply sys.dm_exec_query_plan (qs.plan_handle) AS qp
+ORDER BY qs.total_worker_time DESC
+Check when the last Statistics were updated
+SELECT o.name,i.name  AS [Index Name],
+     STATS_DATE(i.[object_id],i.index_id) AS [Statistics Date],
+     s.auto_created,s.no_recompute,s.user_created,st.row_count
+FROM sys.objects AS o WITH(NOLOCK)
+INNER JOIN sys.indexes AS i WITH(NOLOCK)
+ON o.[object_id] =i.[object_id]
+INNER JOIN sys.stats AS s WITH(NOLOCK)
+ON i.[object_id] =s.[object_id]
+AND i.index_id =s.stats_id
+INNER JOIN sys.dm_db_partition_stats AS st WITH(NOLOCK)
+ON o.[object_id] =st.[object_id]
+AND i.[index_id] =st.[index_id]
+WHERE o.[type] ='U'
+ORDER BY STATS_DATE(i.[object_id],i.index_id) 

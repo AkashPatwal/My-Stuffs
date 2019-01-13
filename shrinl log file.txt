@@ -1,0 +1,3 @@
+select 'use [' + db_name(database_id)+']' + char(10) + 'GO' + char(10) + 
+ + 'checkpoint' + char(10) + 'dbcc shrinkfile(2,10)'+ char(10) + 'GO'
+ from sys.master_files where file_id=2 and physical_name like 'P%' order by size desc

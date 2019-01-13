@@ -1,0 +1,54 @@
+SELECT cp.objtype AS ObjectType,
+OBJECT_NAME(st.objectid,st.dbid) AS ObjectName,
+cp.usecounts AS ExecutionCount,
+st.TEXT AS QueryText,
+qp.query_plan AS QueryPlan
+FROM sys.dm_exec_cached_plans AS cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) AS qp
+CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) AS st
+WHERE OBJECT_NAME(st.objectid,st.dbid) = 'UpdateMechanicStats'
+
+
+
+==================================
+
+To see some of the queries that never get reused, just switch the order to ASC.
+
+
+
+SELECT TOP 10 ThePlans.usecounts, QueryText.text
+  FROM sys.dm_exec_cached_plans AS ThePlans
+    CROSS APPLY sys.dm_exec_sql_text(ThePlans.plan_handle) AS QueryText
+  WHERE ThePlans.cacheobjtype = 'Compiled Plan'
+  ORDER BY ThePlans.usecounts DESC;
+
+===================================
+
+--If you want to find out the ratio of single-use to multi-use cached plans, on your SQL Server instance,
+ then the query in Listing 8 is very handy, because it does the analysis per database.
+
+
+
+SELECT Db_Name(QueryText.dbid) AS database_name,
+  Sum(CASE WHEN ThePlans.usecounts = 1 THEN 1 ELSE 0 END) AS Single_use,
+  Sum(CASE WHEN ThePlans.usecounts > 1 THEN 1 ELSE 0 END) AS Reused,
+  Sum(ThePlans.size_in_bytes) / (1024 * 1024) AS Mb
+  FROM sys.dm_exec_cached_plans AS ThePlans
+    CROSS APPLY sys.dm_exec_sql_text(ThePlans.plan_handle) AS QueryText
+  WHERE ThePlans.cacheobjtype = 'Compiled Plan' AND QueryText.dbid IS NOT NULL
+  GROUP BY QueryText.dbid;
+
+==========================================
+
+--Listing 9 uses the plan_generation_num column to identify the SQL text queries whose plans are getting the most recompiles.
+
+
+
+SELECT TOP 50 Query_Stats.plan_generation_num, Query_Stats.execution_count,
+  QueryText.text
+  FROM sys.dm_exec_query_stats AS Query_Stats
+    CROSS APPLY sys.dm_exec_sql_text(Query_Stats.sql_handle) AS QueryText
+  WHERE Query_Stats.plan_generation_num > 1
+  AND text NOT LIKE '%--RedGateIgnore%'
+  ORDER BY Query_Stats.plan_generation_num DESC;
+

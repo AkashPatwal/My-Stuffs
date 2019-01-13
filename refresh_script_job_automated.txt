@@ -1,0 +1,466 @@
+USE [msdb]
+GO
+
+/****** Object:  Job [PayDirect_Restore_DV]    Script Date: 12/29/2017 7:59:01 AM ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]]    Script Date: 12/29/2017 7:59:01 AM ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'PayDirect_Restore_DV', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'No description available.', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Backup User Permission]    Script Date: 12/29/2017 7:59:01 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Backup User Permission', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=4, 
+		@on_success_step_id=2, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'--Backup User Permission
+
+-- Script version : Ver 1.0.0
+-- Desc : Consolidate script for database User and User Permission for all/specific databases.
+-- Created By : Jayvant 
+
+
+	set nocount on
+	use [master]
+  
+	declare @dir varchar(1000) -- specify outputfile direcotry
+	--declare @retionperiod int  -- Specify file retention period, it should be in day(s)
+	set @dir = ''D:\DV\PayDirect__Automatic_Restore''
+	
+	IF OBJECT_ID(''tempdb..#tFileinfo'') IS NOT NULL
+		drop table #tFileinfo
+
+	create table #tFileinfo(strdbname varchar(255) ,outfilename varchar(255))
+
+	-- for single file for all databases
+		insert into #tFileinfo(strdbname,outfilename) values('' name in(''''PayDirect'''')'',''UserandPermission.txt'')
+		----insert into #tFileinfo(strdbname,outfilename) values('' name in(''''Network'''',''''ReportAlfyNetwork2'''',''''ReportDaily'''')'',''UserandPermission.txt'')
+
+	if exists(select * from master.dbo.sysobjects where xtype = ''U'' and name = ''thelpuser'')
+		drop table thelpuser
+
+	IF OBJECT_ID(''tempdb..#tdb'') IS NOT NULL
+		drop table #tdb
+
+	if exists(select * from master.dbo.sysobjects where xtype = ''U'' and name = ''tOutput'')
+		drop table tOutput
+		
+	create table tOutput(RecID int identity(1,1) primary key ,varDesc varchar(max))
+
+	create table #tdb(dbname varchar(250) null)
+	create table thelpuser( UserName sysname  null  ,RoleName sysname   null ,LoginName sysname   null ,DefDBName sysname   null ,DefSchemaName sysname  null ,UserID smallint   null ,SID smallint null )
+
+	if right(@dir,1) <> ''\''
+		set @dir = @dir + ''\''
+
+	declare @filepath varchar(1000)
+	declare @dbname varchar(255)
+	declare @varScript varchar(max)
+	declare @command varchar(250)
+	declare @ServerName varchar(100)
+	select @ServerName = ''RPSQL01DC04'' --@@SERVERNAME
+
+	--print ''------------------------------- User script for '' + @varDBName + '' database(s) -------------------------------------------''
+	--print ''''
+
+	declare @strdbname varchar(255)
+	declare @outfilename varchar(255)
+
+
+	declare curDb cursor static for
+	select strdbname,outfilename from #tFileinfo
+
+	open curDb
+	fetch next from curDb into  @strdbname,@outfilename
+
+
+	while @@FETCH_STATUS = 0
+		begin
+		
+			truncate table #tdb
+			--print ''insert into #tdb select name from sys.databases where state_desc = ''''ONLINE'''' and  '' + @strdbname + ''''
+			if isnull(@strdbname,'''') = ''All'' 
+				exec (''insert into #tdb select name from sys.databases where  database_id > 4 and state_desc = ''''ONLINE'''''')
+			else
+				exec (''insert into #tdb select  name from sys.databases where  database_id > 4 and state_desc = ''''ONLINE'''' and '' + @strdbname + '''')			
+
+			truncate table tOutput 
+
+			declare curM cursor static for
+				select dbname from #tdb order by dbname
+
+			open curM 
+			fetch next from curM into @dbname
+
+			while @@FETCH_STATUS = 0
+				begin 
+
+					insert into tOutput(varDesc) values('''')
+					insert into tOutput(varDesc) values(''----------------------------------------------->>> User and User permission script for [''+ @dbname +''] Database <<<-------------------------------------------------------------'')
+					insert into tOutput(varDesc) values('''')
+		
+
+					
+					insert into tOutput(varDesc) values(''----Generates database user(s) Script:'')
+					insert into tOutput(varDesc) values('''')
+
+					set @varScript = ''truncate table master.dbo.thelpuser''
+					exec (@varScript)
+					set @varScript = ''insert into master.dbo.[thelpuser] exec [''+ @dbname +''].dbo.sp_helpuser ''
+					exec (@varScript)
+
+		
+					insert into tOutput(varDesc) values(''GO'')
+					insert into tOutput(varDesc) select ''USE ['' + @dbname + '']''
+					insert into tOutput(varDesc) values(''GO'')
+
+					insert into tOutput(varDesc)
+					select distinct
+						  ''IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = ''''''+ UserName +'''''')''
+						  + char(10) + ''	CREATE USER [''+ UserName +'']''
+						  + case when isnull(case when CHARINDEX(''\'',UserName ,1) > 0 and ISNULL(LoginName,'''') = '''' then UserName else LoginName end,'''') <> '''' then
+								'' FOR LOGIN [''+ case when CHARINDEX(''\'',UserName ,1) >0 and ISNULL(LoginName,'''') = '''' then UserName else LoginName end +'']''
+							else
+							 '' WITHOUT LOGIN'' end				
+						  + case when isnull(DefSchemaName,'''') <> '''' then '' WITH DEFAULT_SCHEMA=[''+ DefSchemaName +'']'' 	else '''' end 
+					from thelpuser		where userid>4 
+
+
+					insert into tOutput(varDesc) values('''')
+					insert into tOutput(varDesc) values(''----Generates datbase role memberships:'')
+					insert into tOutput(varDesc) values('''')
+
+					------------------
+					set @varScript = @varScript + char(10) + '' select  ''''if not exists(select * from sys.sysusers where name =''''''''''''+ name + '''''''''''') CREATE ROLE [''''+ name +'''']''''  from sys.database_principals rol where rol.type_desc = ''''DATABASE_ROLE'''' and  rol.name <> ''''public'''' and is_fixed_role =0;''       
+						+ '' insert into master.dbo.tOutput(varDesc)
+						select   
+						case when OBJECT_NAME(major_id) is null then 
+						''''GRANT '''' + prm.permission_name  + '''' TO '''' + rol.name  COLLATE Latin1_General_CI_AS 
+						else 
+						''''GRANT '''' + prm.permission_name + '''' ON '''' + isnull(OBJECT_NAME(major_id),'''''''') + '''' TO '''' + rol.name  COLLATE Latin1_General_CI_AS 
+						end 
+						from sys.database_permissions prm
+						join sys.database_principals rol on
+						prm.grantee_principal_id = rol.principal_id
+						where rol.type_desc = ''''DATABASE_ROLE'''' 
+						and  rol.name <> ''''public'''';''
+
+					------------------
+
+					set @varScript = ''USE ['' + @dbname + '']''
+		
+					insert into tOutput(varDesc) values(''GO'')
+					insert into tOutput(varDesc) values(@varScript)
+					insert into tOutput(varDesc) values(''GO'')
+
+					set @varScript = @varScript + char(10) + '' insert into master.dbo.tOutput(varDesc)  SELECT ''''EXEC sp_addrolemember @rolename ='''' 
+						  + SPACE(1) + QUOTENAME(USER_NAME(rm.role_principal_id), '''''''''''''''') + '''', @membername ='''' + SPACE(1) + QUOTENAME(USER_NAME(rm.member_principal_id), '''''''''''''''') AS ''''--Role Memberships''''
+					FROM  sys.database_role_members AS rm
+					WHERE USER_NAME(rm.member_principal_id) IN 
+								( Select name from sys.database_principals Where principal_id >=5 And type_desc in (''''SQL_USER'''',''''WINDOWS_USER'''',''''WINDOWS_GROUP''''))
+					ORDER BY rm.role_principal_id ASC''
+
+					exec (@varScript)
+
+					insert into tOutput(varDesc) values('''')
+					insert into tOutput(varDesc) values(''----Generates Database Level GRANTS:'')
+					insert into tOutput(varDesc) values('''')
+
+
+					insert into tOutput(varDesc) values(''GO'')
+
+					set @varScript = ''USE ['' + @dbname + '']''
+					insert into tOutput(varDesc) values(@varScript)
+					insert into tOutput(varDesc) values(''GO'')
+
+					set @varScript = @varScript + char(10) + ''insert into master.dbo.tOutput(varDesc) SELECT ltrim(CASE WHEN perm.state <> ''''W'''' THEN perm.state_desc ELSE ''''GRANT'''' END
+						  + SPACE(1) + perm.permission_name + SPACE(1)
+						  + SPACE(1) + ''''TO'''' + SPACE(1) + QUOTENAME(usr.name) COLLATE database_default
+						  + CASE WHEN perm.state <> ''''W'''' THEN SPACE(0) ELSE SPACE(1) + ''''WITH GRANT OPTION'''' END) AS ''''--Database Level Permissions''''
+					FROM  sys.database_permissions AS perm
+						  INNER JOIN sys.database_principals AS usr ON perm.grantee_principal_id = usr.principal_id
+					WHERE usr.name IN ( Select name from sys.database_principals Where principal_id >=5 And type_desc in (''''SQL_USER'''',''''WINDOWS_USER'''',''''WINDOWS_GROUP'''')) 
+					and perm.class_desc <> ''''OBJECT_OR_COLUMN''''
+					ORDER BY perm.permission_name ASC, perm.state_desc ASC''
+
+					exec (@varScript)
+
+					insert into tOutput(varDesc) values('''')
+					insert into tOutput(varDesc) values(''----Generates Object or column level grants:'')
+					insert into tOutput(varDesc) values('''')
+
+					insert into tOutput(varDesc) values(''GO'')
+					set @varScript = ''USE ['' + @dbname + '']''
+					insert into tOutput(varDesc) values(@varScript)
+					insert into tOutput(varDesc) values(''GO'')
+
+					set @varScript = @varScript + char(10) +   ''insert into master.dbo.tOutput(varDesc) SELECT  CASE WHEN perm.state <> ''''W'''' THEN perm.state_desc ELSE ''''GRANT'''' END + SPACE(1) + perm.permission_name + SPACE(1) + ''''ON '''' + QUOTENAME(USER_NAME(obj.schema_id)) + ''''.'''' + QUOTENAME(obj.name) 
+							  + CASE WHEN cl.column_id IS NULL THEN SPACE(0) ELSE ''''('''' + QUOTENAME(cl.name) + '''')'''' END  + SPACE(1) + ''''TO'''' + SPACE(1) + QUOTENAME(usr.name) COLLATE database_default + CASE WHEN perm.state <> ''''W'''' THEN SPACE(0) ELSE SPACE(1) + ''''WITH GRANT OPTION'''' END AS ''''--Object Level Permissions'''' 
+						FROM  sys.database_permissions AS perm
+							  INNER JOIN sys.objects AS obj ON perm.major_id = obj.[object_id]
+							  INNER JOIN sys.database_principals AS usr ON perm.grantee_principal_id = usr.principal_id
+							  LEFT JOIN sys.columns AS cl ON cl.column_id = perm.minor_id AND cl.[object_id] = perm.major_id
+						WHERE usr.name IN ( Select name from sys.database_principals Where principal_id >=5 And type_desc in (''''SQL_USER'''',''''WINDOWS_USER'''',''''WINDOWS_GROUP'''')) 
+						ORDER BY perm.permission_name ASC, perm.state_desc ASC''
+
+					exec (@varScript)
+
+
+					fetch next from curM into @dbname
+				end
+
+			close curM
+			deallocate curM
+
+
+			--set @outfilename = @outfilename + ''_'' + replace(convert(varchar(10), getdate(),101),''/'','''') + ''_'' + replace(convert(varchar(10), getdate(),108),'':'','''') + ''.txt''
+			set @outfilename = @outfilename 
+			set @filepath = @dir  + @outfilename
+
+			--EXECUTE master.dbo.xp_cmdshell ''bcp "select * from tOutput" queryout D:\userscript.txt -c -T''
+
+			set @command = ''EXECUTE master.dbo.xp_cmdshell ''''bcp "select varDesc from tOutput order by recid" queryout ''+@filepath +'' -c -T -S ''+ @ServerName +''''''''
+			print @filepath
+			print @command
+			exec(@command)
+
+			truncate table tOutput
+			fetch next from curDb into  @strdbname,@outfilename
+		end
+	close curDb
+	deallocate curDb
+
+		drop table thelpuser
+		drop table #tdb
+		drop table #tFileinfo
+
+
+
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Restore database]    Script Date: 12/29/2017 7:59:01 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Restore database', 
+		@step_id=2, 
+		@cmdexec_success_code=0, 
+		@on_success_action=4, 
+		@on_success_step_id=3, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'--USE Master; 
+--GO  
+--ALTER DATABASE PayDirect SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+--go
+--SET NOCOUNT ON 
+
+-- 1 - Variable declaration 
+DECLARE @dbName sysname 
+DECLARE @backupPath NVARCHAR(500) 
+DECLARE @cmd NVARCHAR(500) 
+DECLARE @fileList TABLE (backupFile NVARCHAR(255)) 
+DECLARE @lastFullBackup NVARCHAR(500) 
+DECLARE @lastDiffBackup NVARCHAR(500) 
+DECLARE @backupFile NVARCHAR(500) 
+
+-- 2 - Initialize variables 
+SET @dbName = ''PayDirect'' 
+SET @backupPath = ''\\joker\FULL\'' 
+
+-- 3 - get list of files 
+SET @cmd = ''DIR /b "'' + @backupPath + ''"''
+print @cmd
+
+INSERT INTO @fileList(backupFile) 
+EXEC master.sys.xp_cmdshell @cmd 
+
+delete from @fileList where backupFile is null
+
+-- 4 - Find latest full backup 
+SELECT @lastFullBackup = MAX(isnull(backupFile, ''''))  
+FROM @fileList  
+WHERE backupFile LIKE ''%.BAK''  
+
+SET @cmd = ''RESTORE DATABASE ['' + @dbName + ''] FROM DISK = ''''''  
+       + @backupPath + @lastFullBackup + '''''' WITH RECOVERY, REPLACE,'' 
+       + '' move '' + ''''''PayDirect105_dat'''''' + '' to '' + ''''''D:\MSSQL\DATA\PayDirect105_dat.mdf''''''
+        + '', move '' + ''''''PayDirect105_log'''''' + '' to '' + ''''''E:\MSSQL\LOG\PayDirect105_log.ldf''''''
+
+       
+--PRINT @cmd 
+exec (@cmd)
+
+
+go
+ALTER DATABASE PayDirect SET MULTI_USER;
+go
+ALTER DATABASE PayDirect SET RECOVERY SIMPLE
+go
+USE [PayDirect]
+GO
+DBCC SHRINKFILE (N''PayDirect105_log'' , 0)
+GO', 
+		@database_name=N'master', 
+		@flags=8
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Restore User Permission]    Script Date: 12/29/2017 7:59:01 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Restore User Permission', 
+		@step_id=3, 
+		@cmdexec_success_code=0, 
+		@on_success_action=4, 
+		@on_success_step_id=4, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'use master
+go
+
+-- Restore User Permission
+declare @UserPermission_file varchar(1000)
+declare @strFile varchar(1000)
+
+set @UserPermission_file = ''D:\DV\PayDirect__Automatic_Restore\UserandPermission.txt''
+
+set @strFile =   ''sqlcmd -S rpsql01dc04 -i ''+@UserPermission_file +''''
+
+exec xp_cmdshell @strFile
+
+GO
+USE [PayDirect]
+GO
+EXEC sp_addrolemember @rolename = ''db_datareader'', @membername = ''TASCEX1\auth_SQL_reporting''
+GRANT CONNECT  TO [TASCEX1\auth_SQL_reporting]', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Fix Orphan User]    Script Date: 12/29/2017 7:59:01 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Fix Orphan User', 
+		@step_id=4, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'--Fix Orphan User
+
+use master
+go
+
+set nocount on
+declare @dbname sysname
+declare @cmd varchar(8000)
+
+IF OBJECT_ID(''tempdb..#tuser'') IS NOT NULL
+	drop table #tuser
+	
+create table #tuser(dbname sysname null,username varchar(250) null)
+declare curD cursor for
+	select Name from sys.databases where database_id > 4 and state_desc = ''Online''  
+		and name in (''PayDirect'')
+		----and name in (''Network'',''ReportAlfyNetwork2'',''ReportDaily'')
+
+open curD
+fetch next from curD into @dbname
+while @@FETCH_STATUS = 0
+	begin
+
+		set @cmd = 	'' insert into #tuser (dbname,username)
+					SELECT ''''''+@dbname+'''''' as dbname,name FROM ''+ QUOTENAME(@dbname) +''.dbo.sysusers 
+					WHERE issqluser = 1 and sid is not null and sid <> 0x0
+					and suser_sname(sid) is null ORDER BY name''
+		--print @cmd
+		exec (@cmd)
+		fetch next from curD into @dbname
+	end
+close curD
+deallocate curD
+
+DECLARE @username varchar(25)
+
+DECLARE fixusers CURSOR FOR 
+	SELECT dbname,username FROM #tuser 
+
+OPEN fixusers
+FETCH NEXT FROM fixusers INTO @dbname,@username
+WHILE @@FETCH_STATUS = 0
+	BEGIN
+		begin try
+		set @cmd = ''USE '' + QUOTENAME(@dbname) + '';'' + char(10) 
+		set @cmd += ''ALTER USER ''+QUOTENAME(@username)+'' WITH LOGIN = ''+QUOTENAME(@username)+'';''
+		print @cmd
+		exec(@cmd)
+		end try
+
+		begin catch
+			print ''''
+		end catch
+		FETCH NEXT FROM fixusers INTO @dbname,@username
+	END
+CLOSE fixusers
+DEALLOCATE fixusers
+
+drop table #tuser
+
+
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Schedule', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20160812, 
+		@active_end_date=99991231, 
+		@active_start_time=40000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'e7761447-1386-46fe-bfcc-12a1004bcb77'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+
+GO
+
+

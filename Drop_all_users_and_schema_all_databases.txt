@@ -1,0 +1,68 @@
+sp_msforeachdb "use [?]; select '?' as dbname,name from sysusers where name like 'CIS\%' or name like 'CHEPGLBAL\%'"
+
+
+
+------------for schema drop
+EXEC sp_MSForEachDB 'USE [?];
+        IF  EXISTS (SELECT * FROM sys.schemas WHERE name = N''USER_TO_DROP''')
+        DROP SCHEMA [USER_TO_DROP]; 
+
+
+
+
+create table #users(dbname varchar(40),username varchar(40))
+go
+insert into #users
+exec sp_msforeachdb "use [?]; select '?' as dbname,name from sysusers where name like 'CIS\%' or name like 'CHEPGLBAL\%'"
+go
+select 'use ['+dbname +']
+ go 
+ '+
+ 'ALTER AUTHORIZATION ON SCHEMA::['+username+'] TO [dbo]'+'
+ go'
+from #users
+drop table #users
+
+-----------for user drop 
+create table #users(dbname varchar(40),username varchar(40))
+go
+insert into #users
+exec sp_msforeachdb "use [?]; select '?' as dbname,name from sysusers where name like 'CIS\%' or name like 'CHEPGLBAL\%'"
+go
+select 'use ['+dbname +']
+ go '+'
+ drop user ['+username+'] 
+ go '
+from #users
+drop table #users
+
+
+
+================================
+select *
+ from INFORMATION_SCHEMA.SCHEMATA
+ where schema_owner like 'cis\Nharr'
+
+  ALTER AUTHORIZATION ON SCHEMA::[Authorization] TO [dbo]
+
+ ALTER AUTHORIZATION ON SCHEMA::[db_owner] TO [dbo]
+
+ ALTER AUTHORIZATION ON SCHEMA::[HostServer] TO [dbo]
+
+ALTER AUTHORIZATION ON SCHEMA::[Identity] TO [dbo]
+
+ALTER AUTHORIZATION ON SCHEMA::[MessageBus] TO [dbo]
+
+ALTER AUTHORIZATION ON SCHEMA::[Relationship] TO [dbo]
+
+ALTER AUTHORIZATION ON SCHEMA::[Utility] TO [dbo]
+ALTER AUTHORIZATION ON SCHEMA::[Server] TO [dbo]
+ALTER AUTHORIZATION ON SCHEMA::[SmartBox] TO [dbo]
+
+ALTER AUTHORIZATION ON SCHEMA::[ServerLog] TO [dbo]
+
+ 
+
+
+
+

@@ -1,0 +1,103 @@
+set nocount on
+
+if object_id('tempdb..#disp') is not null drop table #disp
+create table #disp (html_code varchar(8000))
+
+if object_id('tempdb..##all_db_files') is not null drop table ##all_db_files
+create table ##all_db_files(databasename nvarchar(50),type varchar(50),
+file_name nvarchar(50),filegroup_name nvarchar(50),file_location nvarchar(200),
+Allocatedsize_mb decimal(10,2),spaceused_mb decimal(10,2),maxsize_MB int,
+Autogrowth nvarchar(50),Availablespace_mb decimal(10,2),Percent_used decimal(10,2))
+
+declare @htmlcode varchar(8000) = ''
+declare @body nvarchar(max) = ''
+declare @sub varchar(80) = ''
+
+exec sp_MSforeachdb '
+use [$];
+insert into ##all_db_files 
+select [database] = ''$'',
+	[type] = a.type_desc,
+	[file_name] = a.name,
+	[filegroup_name] = fg.name,
+	[file_location] = a.physical_name,
+	[Allocatedsize_mb] = convert(decimal(10,2),a.size/128.0),
+	[spaceused_mb] = convert(decimal(10,2),a.size/128.0 - ((size/128.0) - cast(fileproperty(a.name, ''spaceused'') as int)/128.0)),
+	[maxsize_MB] = (a.max_size/128.0) ,
+	[autogrowdesc] = ''by'' + 
+		case is_percent_growth 
+			when 0 then cast(growth/128 as varchar(10)) + ''mb''
+			when 1 then cast(growth as varchar(10)) + ''%'' else '''' end,
+	[Availablespace_mb] = ((a.max_size/128.0)- convert(decimal(10,2),a.size/128.0 - ((size/128.0) - cast(fileproperty(a.name, ''spaceused'') as int)/128.0))),
+	[Percent_used] = 0
+			from sys.database_files a left join sys.filegroups fg on a.data_space_id = fg.data_space_id
+			where a.max_size <> -1',
+@replacechar = '$'
+
+update ##all_db_files set Percent_used = (spaceused_mb/maxsize_MB*100)
+update ##all_db_files set filegroup_name = 'NA' where filegroup_name IS NULL
+
+insert into #disp
+select '<html> <body> <h2 align="center"> '+@@servername+' - database file status report</h2>'
+
+		insert into #disp
+			select '
+			<table  border="1" align="center" cellpadding="0" cellspacing="0" width=100%>
+			<tr> <th colspan=11 align="center" bgcolor="#f5f5ad"><font face="arial" size="3"> RESTRICTED DB FILES UTILISED ABOVE 95% </font> </thd> </tr>
+			<tr> <th bgcolor="#f5f5ad"> <font face="arial" size="2"> Database Name  </font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2"> Type  </font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2"> File Name </font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">File Group</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">File Location</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Allocated size(MB)</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Space USed(MB)</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Max Size(MB)</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Auto Growth</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Available space (MB)</font></th> 
+			<th bgcolor="#f5f5ad"> <font face="arial" size="2">Percent Used(%)</font></th> </tr>'
+
+
+		insert into #disp
+			select 
+			 '<tr bgcolor ="#81f7be" align="center" >' +
+			'<td> <font face="arial" size="2">' + databasename + '</font></td>'+
+			'<td> <font face="arial" size="2">' + type + '</font></td>
+			<td > <font face="arial" size="2">' + file_name + '</font></td>
+			<td > <font face="arial" size="2">' + filegroup_name+ '</font></td>
+			<td > <font face="arial" size="2">' + file_location + '</font></td>
+			<td > <font face="arial" size="2">' + convert(varchar(50),Allocatedsize_mb) + '</font></td>
+			<td > <font face="arial" size="2">' + convert(varchar(50),spaceused_mb) + '</font></td>
+			<td > <font face="arial" size="2">' + convert(varchar(50),maxsize_MB) + '</font></td>
+			<td > <font face="arial" size="2">' + Autogrowth + '</font></td>
+			<td bgcolor ="#FA8072"> <font face="arial" size="2">' + convert(varchar(50),Availablespace_mb) + '</font></td>
+			<td bgcolor ="#FA8072"> <font face="arial" size="2">' + convert(varchar(50),Percent_used) + '</font></td>
+			</tr>'  as html_code from ##all_db_files where Percent_used > 95
+			 
+
+declare display cursor for  select html_code from #disp 
+		open display fetch next from display into @htmlcode
+			while (@@fetch_status = 0)
+			begin 
+				set @body = @body + @htmlcode
+				fetch next from display into @htmlcode
+			end
+		close display
+		deallocate display
+		
+set @body = @body + '</font></table>'
+set @sub = 'DBFILE SPACE STATUS REPORT : ' + @@servername 
+
+declare @count as int
+select @count = count (*) from ##all_db_files where Percent_used > 95
+if @count > 0 
+begin
+exec msdb.dbo.sp_send_dbmail
+@profile_name = 'sqlmgr', 
+@body = @body,
+@body_format ='html',
+@recipients = 'sshimberg@dormanproducts.com',
+@copy_recipients = 'rafet.ducic@datavail.com;shrinivas.gudla@datavail.com',
+@subject = @sub
+end
+
+

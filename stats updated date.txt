@@ -1,0 +1,5 @@
+ SELECT OBJECT_NAME(object_id) AS ObjectName,si.name AS stats_name, 
+    STATS_DATE(object_id, stats_id) AS statistics_update_date
+FROM sys.stats as si
+inner join sysobjects as so on so.id = si.object_id
+where so.type = 'U'

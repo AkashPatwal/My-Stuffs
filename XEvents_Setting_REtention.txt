@@ -1,0 +1,70 @@
+Check which extended event sessions are configured and running in your SQL Server.
+
+
+SELECT 
+	name,
+	event_retention_mode_desc,
+	max_dispatch_latency,
+	max_memory,
+	track_causality,
+	isRunning=
+	CASE startup_state
+	WHEN 0 THEN 'No'
+	WHEN 1 THEN 'Yes'
+	END
+FROM 
+	sys.server_event_sessions
+GO
+
+==================================================
+Find current retention.
+
+SELECT 
+	es.name, 
+	esf.name, 
+	esf.value 
+FROM  
+	sys.server_event_session_fields AS esf
+JOIN 
+	sys.server_event_sessions AS es
+ON 
+	esf.event_session_id=es.event_session_id
+WHERE es.startup_state=1
+	AND (esf.name= 'filename' 
+		OR esf.name ='max_file_size' 
+		OR esf.name='max_rollover_files')
+
+======================================================
+Check SQL server error log default location
+
+
+SELECT 
+	is_enabled,
+	[path]
+FROM
+	SYS.dm_os_server_diagnostics_log_configurations
+GO
+
+=====================================================
+
+This is a generic script and you will have to change some of the values  based on your need.
+
+
+
+
+
+
+ALTER EVENT SESSION [system_health] 
+ON SERVER STATE = STOP
+GO
+ALTER EVENT SESSION [system_health] 
+ON SERVER DROP TARGET package0.event_file 
+ALTER EVENT SESSION [system_health] 
+ON SERVER ADD TARGET package0.event_file 
+	(SET FILENAME=N'system_health.xel',--name of the session
+	max_file_size=(25), --size of each file in MB
+	max_rollover_files=(40)) --how many files you want to keep
+GO
+ALTER EVENT SESSION [system_health] 
+ON SERVER STATE = START
+GO

@@ -1,0 +1,29 @@
+if OBJECT_ID('Tempdb..tmpdbGrowth') > 0 
+  begin
+	drop table tempdb..tmpdbGrowth
+  end
+
+Create table tempdb..tmpdbGrowth (id int identity(1,1) , DatabaseName varchar(200),BackupDate varchar(50), BackupMonth varchar(20),BackupsizeMB varchar(100),CompressedBackupSizeMB varchar(100))
+insert into tempdb..tmpdbGrowth
+select 'DatabaseName' DatabaseName ,'BackupDate' BackupDate ,'BackupMonth' BackupMonth,'BackupsizeMB' BackupsizeMB, 'CompressedBackupSizeMB' CompressedBackupSizeMB
+insert into tempdb..tmpdbGrowth
+SELECT 
+[database_name] AS "Database", 
+backup_start_date as Day,DATENAME(month, backup_start_date) AS 'Month' ,
+AVG([backup_size]/1024/1024) AS "Backup Size MB", 
+AVG([compressed_backup_size]/1024/1024) AS "Compressed Backup Size MB"
+FROM msdb.dbo.backupset 
+WHERE [database_name] in ('GMR_Piceance','GMR_Uinta','GMR_Greeley') AND
+ [type] = 'D' and backup_start_date between DATEADD(MM,-12,getdate()) and GETDATE()
+GROUP BY [database_name],backup_start_date
+--DATEPART(dd,[backup_start_date]) 
+order by database_name  desc, backup_start_date desc
+
+
+
+DECLARE @fileDate VARCHAR(20) -- used for file name
+declare @sql varchar(8000)
+SELECT @fileDate = CONVERT(VARCHAR(20),GETDATE(),112) 
+--select @sql = 'bcp "select * from tempdb..tmpdbGrowth" queryout G:\DB_Growth\DB_GrwothRate_' + @fileDate + '.csv -c -t, -T -S'+ @@servername
+select @sql = 'bcp "select DatabaseName,BackupDate,BackupMonth,BackupsizeMB,CompressedBackupSizeMB from tempdb..tmpdbGrowth" queryout G:\DB_Growth\DB_GrwothRate.csv -c -t, -T -S'+ @@servername
+exec master..xp_cmdshell @sql

@@ -1,0 +1,427 @@
+Create Table #GetInstances
+
+( Value nvarchar(100),
+
+InstanceNames nvarchar(100),
+
+Data nvarchar(100))
+
+ 
+
+Insert into #GetInstances
+
+EXECUTE xp_regread
+
+  @rootkey = 'HKEY_LOCAL_MACHINE',
+
+  @key = 'SOFTWARE\Microsoft\Microsoft SQL Server',
+
+  @value_name = 'InstalledInstances'
+
+Select InstanceNames from #GetInstances
+
+ 
+
+drop table #GetInstances
+
+ 
+
+ 
+
+ 
+
+ 
+
+SELECT ServerName=@@servername ,version=@@version,
+
+Edition=Serverproperty('Edition'),
+
+ProductLevel=Serverproperty('ProductLevel'),
+
+ServerVersion=Serverproperty('Productversion')
+
+ 
+
+SELECT distinct(volume_mount_point),
+
+  total_bytes/1048576 as Size_in_MB,
+
+  available_bytes/1048576 as Free_in_MB,
+
+  (select ((available_bytes/1048576* 1.0)/(total_bytes/1048576* 1.0)
+
+*100)) as FreePercentage
+
+FROM sys.master_files AS f CROSS APPLY
+
+  sys.dm_os_volume_stats(f.database_id, f.file_id)
+
+group by volume_mount_point, total_bytes/1048576,
+
+  available_bytes/1048576 order by 1
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+SELECT
+
+             name as [Database name],
+
+             CASE is_published
+
+                            
+
+WHEN 0 THEN 'No'
+
+                             ELSE 'Yes'
+
+                             END AS [Is
+
+Published],
+
+             CASE is_merge_published
+
+                             WHEN 0 THEN 'No'
+
+                             ELSE 'Yes'
+
+                             END AS [Is Merge Published],
+
+            
+
+CASE is_distributor
+
+                             WHEN 0 THEN 'No'
+
+                             ELSE
+
+'Yes'
+
+                             END AS [Is Distributor],
+
+             CASE
+
+is_subscribed
+
+                             WHEN 0 THEN 'No'
+
+                             ELSE
+
+'Yes'
+
+                             END AS [Is Subscribed]
+
+FROM sys.databases
+
+--
+
+WHERE database_id > 4
+
+ 
+
+ 
+
+ 
+
+sp_configure 'show advanced options',1
+
+go
+reconfigure
+go
+
+sp_configure 'max degree of parallelism'
+
+go
+
+sp_configure 'Cost threshold for parallelism'
+
+go
+
+sp_configure 'Database Mail XPs'
+
+go
+
+sp_configure 'Xp_cmdshell'
+
+go
+
+sp_configure 'Optimize for ad hoc workloads'
+
+ 
+
+ 
+
+ 
+
+ 
+
+select
+
+name,is_auto_shrink_on,is_auto_close_on,is_auto_create_stats_on,is_auto_update_stats_on, * 
+from sys.databases
+
+ 
+
+ 
+
+SELECT name, user_access_desc, is_read_only, state_desc,
+
+recovery_model_desc
+
+FROM sys.databases;
+
+ 
+
+SELECT name
+
+, s.snapshot_isolation_state
+
+, snapshot_isolation_state_desc
+
+, is_read_committed_snapshot_on
+
+FROM sys.databases s
+
+ 
+
+ 
+
+ 
+
+SELECT  name AS [Database] ,
+
+CASE WHEN page_verify_option = 0 THEN 'NONE'
+
+WHEN page_verify_option = 1 THEN 'TORN_PAGE_DETECTION'
+
+WHEN page_verify_option = 2 THEN 'CHECKSUM'
+
+END AS [Page Verify]
+
+FROM    sys.databases
+
+WHERE   database_id > 4
+
+ 
+
+SELECT name,compatibility_level 
+
+FROM sys.databases
+
+ 
+
+ 
+
+ 
+
+SELECT @@SERVERNAME As Nodename,
+[name] AS [Name]
+    ,[configuration_id] AS [Number]
+    ,[minimum] AS [Minimum]
+    ,[maximum] AS [Maximum]
+    ,[is_dynamic] AS [Dynamic]
+    ,[is_advanced] AS [Advanced]
+    ,[value] AS [ConfigValue]
+    ,[value_in_use] AS [RunValue]
+    ,[description] AS [Description]
+FROM [master].[sys].[configurations]
+WHERE NAME IN ('Min server memory (MB)', 'Max server memory (MB)')
+ 
+
+ 
+
+select physical_memory_in_use_kb/(1024) as sql_physmem_inuse_mb,
+
+locked_page_allocations_kb/(1024) as awe_memory_mb,
+
+total_virtual_address_space_kb/(1024) as max_vas_mb,
+
+virtual_address_space_committed_kb/(1024) as sql_committed_mb,
+
+memory_utilization_percentage as working_set_percentage,
+
+virtual_address_space_available_kb/(1024) as vas_available_mb,
+
+process_physical_memory_low as is_there_external_pressure,
+
+process_virtual_memory_low as is_there_vas_pressure
+
+from sys.dm_os_process_memory
+
+go
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--check VLF count
+
+
+
+--variables to hold each 'iteration' 
+declare @query varchar(100) 
+declare @dbname sysname 
+declare @vlfs int 
+  
+--table variable used to 'loop' over databases 
+declare @databases table (dbname sysname) 
+insert into @databases 
+--only choose online databases 
+select name from sys.databases where state = 0 
+  
+--table variable to hold results 
+declare @vlfcounts table 
+    (dbname sysname, 
+    vlfcount int) 
+  
+ 
+ 
+--table variable to capture DBCC loginfo output 
+--changes in the output of DBCC loginfo from SQL2012 mean we have to determine the version
+ 
+declare @MajorVersion tinyint 
+set @MajorVersion = LEFT(CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(max)),CHARINDEX('.',CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(max)))-1)
+ 
+if @MajorVersion < 11 -- pre-SQL2012
+begin
+    declare @dbccloginfo table 
+    ( 
+        fileid tinyint, 
+        file_size bigint, 
+        start_offset bigint, 
+        fseqno int, 
+        [status] tinyint, 
+        parity tinyint, 
+        create_lsn numeric(25,0) 
+    ) 
+  
+    while exists(select top 1 dbname from @databases) 
+    begin 
+  
+        set @dbname = (select top 1 dbname from @databases) 
+        set @query = 'dbcc loginfo (' + '''' + @dbname + ''') ' 
+  
+        insert into @dbccloginfo 
+        exec (@query) 
+  
+        set @vlfs = @@rowcount 
+  
+        insert @vlfcounts 
+        values(@dbname, @vlfs) 
+  
+        delete from @databases where dbname = @dbname 
+  
+    end --while
+end
+else
+begin
+    declare @dbccloginfo2012 table 
+    ( 
+        RecoveryUnitId int,
+        fileid tinyint, 
+        file_size bigint, 
+        start_offset bigint, 
+        fseqno int, 
+        [status] tinyint, 
+        parity tinyint, 
+        create_lsn numeric(25,0) 
+    ) 
+  
+    while exists(select top 1 dbname from @databases) 
+    begin 
+  
+        set @dbname = (select top 1 dbname from @databases) 
+        set @query = 'dbcc loginfo (' + '''' + @dbname + ''') ' 
+  
+        insert into @dbccloginfo2012 
+        exec (@query) 
+  
+        set @vlfs = @@rowcount 
+  
+        insert @vlfcounts 
+        values(@dbname, @vlfs) 
+  
+        delete from @databases where dbname = @dbname 
+  
+    end --while
+end
+  
+--output the full list 
+select dbname, vlfcount 
+from @vlfcounts 
+order by dbname
+
+
+
+
+
+-----------------------------
+
+
+
+----Checking Auto Growth settings
+
+ 
+
+SELECT
+
+S.[name] AS [Logical Name]
+
+,S.[file_id] AS [File ID]
+
+, S.[physical_name] AS [File Name]
+
+,CAST(CAST(G.name AS VARBINARY(256)) AS sysname) AS [FileGroup_Name]
+
+,CONVERT (varchar(10),(S.[size]*8)) + ' KB' AS [Size]
+
+,CASE WHEN S.[max_size]=-1 THEN 'Unlimited' ELSE CONVERT(VARCHAR(10),CONVERT(bigint,S.[max_size])*8) +' KB' END AS [Max Size]
+
+,CASE s.is_percent_growth WHEN 1 THEN CONVERT(VARCHAR(10),S.growth) +'%' ELSE Convert(VARCHAR(10),S.growth*8) +' KB' END AS [Growth]
+
+,Case WHEN S.[type]=0 THEN 'Data Only'
+
+WHEN S.[type]=1 THEN 'Log Only'
+
+WHEN S.[type]=2 THEN 'FILESTREAM Only'
+
+WHEN S.[type]=3 THEN 'Informational purposes Only'
+
+WHEN S.[type]=4 THEN 'Full-text '
+
+END AS [usage]
+
+,DB_name(S.database_id) AS [Database Name]
+
+FROM sys.master_files AS S
+
+LEFT JOIN sys.filegroups AS G ON ((S.type = 2 OR S.type = 0)
+
+AND (S.drop_lsn IS NULL)) AND (S.data_space_id=G.data_space_id)
+
+
+

@@ -1,0 +1,76 @@
+TDS/Network Protocols
+SQL Server is a client-server platform in which a client usually establishes a long-lived connection with
+the database server using the TDS ( Tabular Data Stream) protocol over a network protocol. TDS is an
+application-level protocol that facilitates the interaction between clients and SQL Server. Sybase Inc.
+initially designed and developed it for their Sybase SQL Server relational database engine in 1984, which
+later became a Microsoft product. Although the TDS specification does not define a specific network
+transport protocol, the current version of TDS has been implemented over TCP/IP, VIA ( Virtual Interface
+Architecture ), and the Named Pipes network transport protocols (although the VIA protocol has been
+deprecated and will be removed in a future version of Microsoft SQL Server).
+
+
+¦ Note You can also use the Shared Memory protocol to connect to an instance of SQL Server, but it can
+only be used to connect from the same computer where the database engine is running; it cannot be used for
+access from other computers on the network.
+
+
+TCP/IP is by far the most common protocol used by SQL Server implementations. The default TCP/
+IP port used by the database engine is 1433, although other ports can be configured and in some cases
+required, for example, when using multiple instances. Some other services may use a different port. For
+example, the SQL Server Browser starts and claims UDP port 1434. When the database engine uses a TCP/IP
+port different from the default, the port number has to either be specified in the connection string or it can
+be resolved by the SQL Server Browser service, if enabled. The default pipe \sql\query is used when Named
+Pipes protocol is configured.
+
+====================================================
+Fixing tempdb Latch Contention
+In my opinion, there is no perfect solution to the latch contention problem as the database engine should be
+able to escalate and work fine as the number of operations increase. An obvious solution may be to minimize
+the number of temporary tables created in tempdb one at a time, but this may not be easy to implement as it
+would require code and application changes. Keep in mind that internal objects, like the ones created by sort
+and hash operations, are not created explicitly by users and do not require the allocation methods discussed
+in this section. These internal objects are, however, a performance problem for other reasons that we will
+discuss later.
+The workaround to these problems have historically been one or a combination of some of the
+following choices, prior to SQL Server 2016:
+1. Using multiple data files
+2. Enabling trace flag 1118
+3. Enabling trace flag 1117
+
+
+====================================================================
+
+USE tempdb
+GO
+SELECT
+SUM (user_object_reserved_page_count) * 1.0 / 128 as user_object_mb,
+SUM (internal_object_reserved_page_count) * 1.0 / 128 as internal_objects_mb,
+SUM (version_store_reserved_page_count) * 1.0 / 128 as version_store_mb,
+SUM (unallocated_extent_page_count) * 1.0 / 128 as free_space_mb,
+SUM (mixed_extent_page_count) * 1.0 / 128 as mixed_extents_mb
+FROM sys.dm_db_file_space_usage
+
+
+
+
+Sometimes you may need to look for a specific process which can be causing the disk space problem. In
+this case, you could use sys.dm_db_task_space_use DMV, which returns page allocation and de-allocation
+activity by task and is applicable only to the tempdb database. An example is the following query, borrowed
+from the tempdb white paper mentioned in the summary of this chapter:
+
+
+
+
+
+SELECT t1.session_id, t1.request_id, t1.task_alloc,
+t1.task_dealloc, t2.sql_handle, t2.statement_start_offset,
+t2.statement_end_offset, t2.plan_handle
+FROM (SELECT session_id, request_id,
+SUM(internal_objects_alloc_page_count) AS task_alloc,
+SUM (internal_objects_dealloc_page_count) AS task_dealloc
+FROM sys.dm_db_task_space_usage
+GROUP BY session_id, request_id) AS t1,
+sys.dm_exec_requests AS t2
+WHERE t1.session_id = t2.session_id
+AND (t1.request_id = t2.request_id)
+ORDER BY t1.task_alloc DESC

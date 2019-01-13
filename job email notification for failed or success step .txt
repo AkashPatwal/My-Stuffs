@@ -1,0 +1,90 @@
+DECLARE 
+
+@YourRecipients as varchar(1000) = 'iwong@bncollege.com;rcairoli@bncollege.com;ecoker@bncollege.com;snelson@bncollege.com'
+,@YourMailProfileName as varchar(255) = 'DV'
+
+,@Msg as varchar(5000)
+,@NumofFails as smallint
+,@Numofstep as smallint
+,@JobName as varchar(1000)
+,@Subj as varchar(1000)
+,@i as smallint = 1
+
+
+---------------Fetch List of Step Errors------------
+SELECT *
+INTO #Errs
+
+FROM
+
+    (
+    SELECT 
+      rank() over (PARTITION BY step_id ORDER BY step_id) rn
+    , ROW_NUMBER() over (partition by step_id order by run_date desc, run_time desc) ReverseTryOrder
+    ,j.name job_name
+    ,run_status
+    , step_id
+    , step_name
+    , [message]
+
+    FROM    msdb.dbo.sysjobhistory h
+    join msdb.dbo.sysjobs j on j.job_id = h.job_id
+
+    WHERE   instance_id > COALESCE((SELECT MAX(instance_id) FROM msdb.dbo.sysjobhistory  WHERE job_id = $(ESCAPE_SQUOTE(JOBID)) AND step_id = 0), 0)            AND h.job_id = $(ESCAPE_SQUOTE(JOBID))
+    ) as agg
+
+WHERE ReverseTryOrder = 1 ---Pick the last retry attempt of each step
+  --AND run_status <> 1 -- show only those that didn't succeed 
+
+
+select  @NumofFails = COUNT(*) from #Errs where run_status <> 1 ---Stored here because we'll still need the rowcount after it's reset.
+
+select  @Numofstep  = COUNT(*) from #Errs 
+-------------------------If there are any failures assemble email and send ------------------------------------------------
+--IF  @NumofFails <> 0
+    --BEGIN
+
+        --DECLARE @PluralS as char(1) = CASE WHEN @NumofFails > 1 THEN 's' ELSE '' END 		---To make it look like a computer knows English
+
+
+
+        
+
+
+        WHILE @i <= @Numofstep 
+        BEGIN
+
+		--SELECT top 1 @Subj = 'Job: ' + job_name + ' had ' + CAST(@NumofFails as varchar(3)) + ' step' + @PluralS + ' that failed'
+  --                  ,@Msg =  'The trouble is... ' +CHAR(13) + CHAR(10)+CHAR(13) + CHAR(10)
+
+  --                      FROM dbo.#Errs
+
+            SELECT 	@Subj = 'Generate weekly data for Job: ' + job_name + '(Step:' + CAST(step_id as varchar(3)) + ': ' + step_name +') ' + CASE WHEN run_status = 1 THEN ' -Completed sucessfully' ELSE ' -Failed ' END 
+			FROM dbo.#Errs            WHERE step_id= @i			
+			SELECT @Msg =             [message] 
+			FROM dbo.#Errs             WHERE step_id= @i
+
+
+            SET @i = @i + 1
+
+			exec msdb.dbo.sp_send_dbmail
+            @recipients = @YourRecipients,
+            @subject = @Subj,
+            @profile_name = @YourMailProfileName,
+            @body = @Msg,
+			@body_format = 'TEXT'
+        END
+
+          
+--END
+--else 
+--SELECT top 1 @Subj = 'Job: ' + job_name + ' is  completed sucessfully' 
+--					FROM dbo.#Errs
+
+       
+--set @Msg ='All steps completed sucessfully'
+-- exec msdb.dbo.sp_send_dbmail
+--            @recipients = @YourRecipients,
+--            @subject = @Subj,
+--            @profile_name = @YourMailProfileName,
+--            @body = @Msg

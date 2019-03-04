@@ -1,0 +1,104 @@
+SELECT 
+		CASE
+			WHEN CHARINDEX('\',@@SERVERNAME) = 0 THEN @@SERVERNAME 
+			WHEN CHARINDEX('\',@@SERVERNAME) != 0 THEN SUBSTRING(@@SERVERNAME,1,CHARINDEX('\',@@SERVERNAME)-1)
+		END as HostName,
+		@@SERVICENAME as InstanceName,
+        	DB.name AS DatabaseName,
+		DB.recovery_model_desc as RecoveryModel,
+		'FULL' as BackupType,
+        ISNULL(physical_device_name,'NOT FOUND') AS BackupLocation,
+        ISNULL(CONVERT(nvarchar(20),CAST(compressed_backup_size / POWER(2,30) AS DECIMAL(10, 2) )),0) + ' GB' AS BackupSize,
+        ISNULL(BackupStartDate_UTC,CAST(0 as datetime)) as BackupStartDate_UTC,
+		ISNULL(BackupEndDate_UTC,CAST(0 as datetime)) as BackupEndDate_UTC,
+		ISNULL(BackupDuration_Mins,-1) as BackupDuration_Mins,
+		GETUTCDATE() as TimeOfCheckingUTC
+FROM (select * from sys.databases where name != 'tempdb') DB
+left join 
+(select * from 
+(SELECT bs.database_name,
+        bs.compressed_backup_size,
+        DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_start_date) as BackupStartDate_UTC,
+		DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_finish_date) as BackupEndDate_UTC,
+		CAST(DATEDIFF(MINUTE,bs.backup_start_date,bs.backup_finish_date) as DECIMAL (10,4)) as BackupDuration_Mins,
+        bmf.physical_device_name,
+		bs.type,
+        Position = ROW_NUMBER() OVER( PARTITION BY bs.database_name ORDER BY bs.backup_start_date DESC )
+FROM msdb.dbo.backupmediafamily bmf
+JOIN msdb.dbo.backupmediaset bms ON bmf.media_set_id = bms.media_set_id
+JOIN msdb.dbo.backupset bs ON bms.media_set_id = bs.media_set_id
+WHERE bs.type = 'D'
+) as LastFullBackUp
+where Position = 1
+) as LFBU
+on DB.name = LFBU.database_name
+union
+SELECT 
+		CASE
+			WHEN CHARINDEX('\',@@SERVERNAME) = 0 THEN @@SERVERNAME 
+			WHEN CHARINDEX('\',@@SERVERNAME) != 0 THEN SUBSTRING(@@SERVERNAME,1,CHARINDEX('\',@@SERVERNAME)-1)
+		END as HostName,
+		@@SERVICENAME as InstanceName,
+        	DB.name AS DatabaseName,
+		DB.recovery_model_desc as RecoveryModel,
+		'DIFF' as BackupType,
+        ISNULL(physical_device_name,'NOT FOUND') AS BackupLocation,
+        ISNULL(CONVERT(nvarchar(20),CAST(compressed_backup_size / POWER(2,30) AS DECIMAL(10, 2) )),0) + ' GB' AS BackupSize,
+        ISNULL(BackupStartDate_UTC,CAST(0 as datetime)) as BackupStartDate_UTC,
+		ISNULL(BackupEndDate_UTC,CAST(0 as datetime)) as BackupEndDate_UTC,
+		ISNULL(BackupDuration_Mins,-1) as BackupDuration_Mins,
+		GETUTCDATE() as TimeOfCheckingUTC
+FROM (select * from sys.databases where name != 'tempdb') DB
+left join 
+(select * from 
+(SELECT bs.database_name,
+        bs.compressed_backup_size,
+        DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_start_date) as BackupStartDate_UTC,
+		DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_finish_date) as BackupEndDate_UTC,
+		CAST(DATEDIFF(MINUTE,bs.backup_start_date,bs.backup_finish_date) as DECIMAL (10,4)) as BackupDuration_Mins,
+        bmf.physical_device_name,
+		bs.type,
+        Position = ROW_NUMBER() OVER( PARTITION BY bs.database_name ORDER BY bs.backup_start_date DESC )
+FROM msdb.dbo.backupmediafamily bmf
+JOIN msdb.dbo.backupmediaset bms ON bmf.media_set_id = bms.media_set_id
+JOIN msdb.dbo.backupset bs ON bms.media_set_id = bs.media_set_id
+WHERE bs.type = 'I'
+) as LastFullBackUp
+where Position = 1
+) as LFBU
+on DB.name = LFBU.database_name
+union
+SELECT 
+		CASE
+			WHEN CHARINDEX('\',@@SERVERNAME) = 0 THEN @@SERVERNAME 
+			WHEN CHARINDEX('\',@@SERVERNAME) != 0 THEN SUBSTRING(@@SERVERNAME,1,CHARINDEX('\',@@SERVERNAME)-1)
+		END as HostName,
+		@@SERVICENAME as InstanceName,
+        	DB.name AS DatabaseName,
+		DB.recovery_model_desc as RecoveryModel,
+		'LOG' as BackupType,
+        ISNULL(physical_device_name,'NOT FOUND') AS BackupLocation,
+        ISNULL(CONVERT(nvarchar(20),CAST(compressed_backup_size / POWER(2,30) AS DECIMAL(10, 2) )),0) + ' GB' AS BackupSize,
+        ISNULL(BackupStartDate_UTC,CAST(0 as datetime)) as BackupStartDate_UTC,
+		ISNULL(BackupEndDate_UTC,CAST(0 as datetime)) as BackupEndDate_UTC,
+		ISNULL(BackupDuration_Mins,-1) as BackupDuration_Mins,
+		GETUTCDATE() as TimeOfCheckingUTC
+FROM (select * from sys.databases where name != 'tempdb') DB
+left join 
+(select * from 
+(SELECT bs.database_name,
+        bs.compressed_backup_size,
+        DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_start_date) as BackupStartDate_UTC,
+		DATEADD(SS,DATEDIFF(SS,GETDATE(),GETUTCDATE()),bs.backup_finish_date) as BackupEndDate_UTC,
+		CAST(DATEDIFF(MINUTE,bs.backup_start_date,bs.backup_finish_date) as DECIMAL (10,4)) as BackupDuration_Mins,
+        bmf.physical_device_name,
+		bs.type,
+        Position = ROW_NUMBER() OVER( PARTITION BY bs.database_name ORDER BY bs.backup_start_date DESC )
+FROM msdb.dbo.backupmediafamily bmf
+JOIN msdb.dbo.backupmediaset bms ON bmf.media_set_id = bms.media_set_id
+JOIN msdb.dbo.backupset bs ON bms.media_set_id = bs.media_set_id
+WHERE bs.type = 'L'
+) as LastFullBackUp
+where Position = 1
+) as LFBU
+on DB.name = LFBU.database_name

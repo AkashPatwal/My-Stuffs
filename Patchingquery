@@ -1,0 +1,227 @@
+	
+	IF (SELECT OBJECT_ID('IntelligentDB.dbo.Patching_Details_automation')) IS NULL 
+		begin
+			-- 1 create table if not present
+			create table IntelligentDB.dbo.Patching_Details_automation
+			(
+			
+		[Server_Name]   nVARCHAR(150)  not null
+      ,[MajorVersion]  nVARCHAR(150)	
+      ,[ProductVersion] nVARCHAR(150)  
+      ,[Productlevel] nVARCHAR(50)  
+      ,[ProductUpdateLevel] nVARCHAR(50)  
+      ,[Edition] nVARCHAR(50)  
+      ,[AG_Name] nVARCHAR(50)  
+      ,[Replica_Server_Name]  nVARCHAR(50)  
+      ,[IsPrimaryServer]  nVARCHAR(50)  
+      ,[Synchronous]  nVARCHAR(50)  
+      ,[ReadableSecondary] nVARCHAR(150)  
+   ,[Failover_Mode_Desc] nVARCHAR(150) 
+   )
+		end
+
+
+	else
+		begin
+			-- 2 cleanup old entries
+		
+		truncate table IntelligentDB.dbo.Patching_Details_automation
+
+
+DECLARE   
+  @Alert   int  
+ ,@vSubject  nVARCHAR(100)  
+ ,@tableHTML  nVARCHAR(MAX)  
+ ,@TableHeader nVARCHAR(MAX)
+ ,@TableHeader_new nVARCHAR(MAX)
+ ,@TableTail  nVARCHAR(MAX)
+  SET @vSubject = 'SQL Server Patching Details -' + convert(nvarchar(50),Getdate())  
+  
+  
+   Set @TableTail = '</table></body><p font-family:calibri light;><br/> Regards,<br/>iEng-Database</p></html>';  
+   Set @TableHeader = '<html><head>'+  
+     '<tr><h2 style="text-align: center;font-family:calibri light;"><span style="color: #008080;">Patching Details</span></h2></tr /font>'+  
+     '<style>' +  
+     'td {border: solid #edbb99 1px;padding-left:5px;padding-right:5px;padding-top:1px;padding-bottom:1px;font-size:10pt;font-family:calibri light;} ' +  
+     'th {border: solid #581845 1px;background-color:#581845;font-color:white;padding-left:5px;padding-right:5px;padding-top:1px;padding-bottom:1px;font-size:11pt;font-family:calibri light;} ' +  
+     '</style>' +  
+     '</head>' +  
+     '<body><table cellpadding=0 cellspacing=0 border=0>'
+
+/*
+	 DECLARE @t_Patching_AlwaysON TABLE  
+(  
+    [Server_Name]   nVARCHAR(150)  
+      ,[MajorVersion]  nVARCHAR(150)  
+      ,[ProductVersion] nVARCHAR(150)  
+      ,[Productlevel] nVARCHAR(50)  
+      ,[ProductUpdateLevel] nVARCHAR(50)  
+      ,[Edition] nVARCHAR(50)  
+      ,[AG_Name] nVARCHAR(50)  
+      ,[Replica_Server_Name]  nVARCHAR(50)  
+      ,[IsPrimaryServer]  nVARCHAR(50)  
+      ,[Synchronous]  nVARCHAR(50)  
+      ,[ReadableSecondary] nVARCHAR(150)  
+   ,[Failover_Mode_Desc] nVARCHAR(150)   
+  
+)
+
+*/
+
+IF SERVERPROPERTY ('IsHadrEnabled') = 1
+BEGIN
+
+
+WITH AGStatus AS(
+SELECT
+convert(nvarchar,name) as AGname,
+replica_server_name,
+CASE WHEN  (primary_replica  = replica_server_name) THEN  1
+ELSE  '' END AS IsPrimaryServer,
+secondary_role_allow_connections_desc AS ReadableSecondary,
+[availability_mode]  AS [Synchronous],
+failover_mode_desc
+FROM master.sys.availability_groups Groups
+INNER JOIN master.sys.availability_replicas Replicas ON Groups.group_id = Replicas.group_id
+INNER JOIN master.sys.dm_hadr_availability_group_states States ON Groups.group_id = States.group_id
+)
+ 
+insert into IntelligentDB.dbo.Patching_Details_automation
+Select convert(nvarchar,@@servername) Server_Name,CASE 
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '8%' THEN 'SQL2000'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '9%' THEN 'SQL2005'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '10.0%' THEN 'SQL2008'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '10.5%' THEN 'SQL2008 R2'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '11%' THEN 'SQL2012'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '12%' THEN 'SQL2014'
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '13%' THEN 'SQL2016'     
+     WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '14%' THEN 'SQL2017' 
+	  WHEN CONVERT(nVARCHAR(128), SERVERPROPERTY ('productversion')) like '15%' THEN 'SQL2019' 
+     ELSE 'unknown'
+  END AS MajorVersion,
+convert(nvarchar,SERVERPROPERTY('productversion')) ProductVersion
+     , convert(nvarchar,SERVERPROPERTY('productlevel')) ProductLevel
+	 ,CASE when convert(nvarchar,SERVERPROPERTY('ProductUpdateLevel')) is null then 'NA'END AS  ProductUpdateLevel
+     , convert(nvarchar,SERVERPROPERTY('edition')) Edition,
+[AGname],
+[Replica_server_name],
+[IsPrimaryServer],
+[Synchronous],
+[ReadableSecondary],
+[Failover_mode_desc]
+FROM AGStatus
+--WHERE
+--IsPrimaryServer = 1
+--AND Synchronous = 1
+ORDER BY AGname ASC,IsPrimaryServer DESC;
+
+
+
+
+
+---------------------If AG enabled populate the fields as per the following
+
+
+ Set @TableHeader_new = @TableHeader +
+      '<tr><th>Server_Name</th /font>' +  
+     '<th>MajorVersion</th /font>' +  
+     '<th>ProductVersion</th /font>' +  
+     '<th>Productlevel</th /font>' +  
+     '<th>ProductUpdateLevel</th /font>' +  
+     '<th>Edition</th /font>' +  
+     '<th>AGName</th /font>' +  
+     '<th>Replica_Server_Name</th /font>' +  
+     '<th>IsPrimaryServer</th /font>' +  
+     '<th>Synchronous</th /font>' +  
+     '<th>ReadableSecondary</th /font>
+	 <th>Failover_Mode_Desc</th /font></tr>';  
+  
+
+  
+
+END
+
+else
+begin
+
+
+
+insert into IntelligentDB.dbo.Patching_Details_automation
+
+SELECT @@servername Server_Name,CASE 
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '8%' THEN 'SQL2000'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '9%' THEN 'SQL2005'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '10.0%' THEN 'SQL2008'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '10.5%' THEN 'SQL2008 R2'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '11%' THEN 'SQL2012'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '12%' THEN 'SQL2014'
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '13%' THEN 'SQL2016'     
+     WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '14%' THEN 'SQL2017' 
+	  WHEN CONVERT(NVARCHAR(128), SERVERPROPERTY ('productversion')) like '15%' THEN 'SQL2019' 
+     ELSE 'unknown'
+  END AS MajorVersion,convert(nvarchar,SERVERPROPERTY('productversion')) ProductVersion
+     , convert(nvarchar,SERVERPROPERTY('productlevel')) ProductLevel,
+	 convert(nvarchar,SERVERPROPERTY('ProductUpdateLevel')) ProductUpdateLevel
+     , convert(nvarchar,SERVERPROPERTY('edition')) Edition
+	 ,'NA' as [AG_Name]
+	 ,'NA'as [Replica_Server_Name]
+	 ,'NA' as [IsPrimaryServer]
+	 ,'NA' as [Synchronous]
+	 ,'NA' as [ReadableSecondary]
+	 ,'NA' as [Failover_Mode_Desc]
+
+
+	 end
+
+ Set @TableHeader_new = @TableHeader +
+      '<tr><th>Server_Name</th /font>' +  
+     '<th>MajorVersion</th /font>' +  
+     '<th>ProductVersion</th /font>' +  
+     '<th>Productlevel</th /font>' +  
+     '<th>ProductUpdateLevel</th /font>' +  
+     '<th>Edition</th /font>' +  
+     '<th>AGName</th /font>' +  
+     '<th>Replica_Server_Name</th /font>' +  
+     '<th>IsPrimaryServer</th /font>' +  
+     '<th>Synchronous</th /font>' +  
+     '<th>ReadableSecondary</th /font>
+	 <th>Failover_Mode_Desc</th /font></tr>';  
+  
+   Select @tableHTML = CAST ( ( SELECT  DISTINCT 
+           td=[Server_Name],''  
+          ,td=[MajorVersion],''  
+          ,td=[ProductVersion] ,''  
+          ,td=[ProductLevel],''  
+          ,td=[ProductUpdateLevel],''  
+          ,td=[Edition],''
+		   ,td=[AG_Name],''  
+          ,td=[Replica_Server_Name],''  
+          ,td=[IsPrimaryServer],''  
+		  ,td=[Synchronous],''  
+          ,td=[ReadableSecondary],''  
+          ,td=[Failover_Mode_Desc]     
+           FROM   
+          IntelligentDB.dbo.Patching_Details_automation  
+          ORDER BY [Server_Name]  
+         FOR XML PATH('tr'), TYPE   
+           ) AS NVARCHAR(MAX) ) +  
+           N'</table>';  
+
+  
+
+
+   Select @tableHTML = @TableHeader_new + @tableHTML + @TableTail  
+   
+   --print @tableHTML
+
+  EXEC msdb.dbo.sp_send_dbmail   
+   @profile_name = 'prfDATABASE_ALERTS',  
+   @recipients = 'akash.patwal@msci.com', 
+   
+   @subject = @vSubject,    
+   @body = @tableHTML,  
+   @body_format = 'html'  
+  
+
+end
+

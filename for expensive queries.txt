@@ -1,0 +1,31 @@
+select top 50 coalesce (db_name(st.dbid), db_name(convert (int, pa.value)), 'Empty') as DBName, 
+SUBSTRING(st.text, (qs.statement_start_offset/2)+1, 
+        ((CASE qs.statement_end_offset
+          WHEN -1 THEN DATALENGTH(st.text)
+         ELSE qs.statement_end_offset
+         END - qs.statement_start_offset)/2) + 1) AS StatementText,
+st.text as ProcedureTextOrBatchText,         
+qs.plan_generation_num as PlanGenerationNumber,
+qs.execution_count as ExecutionCount,
+(qs.total_worker_time/1000) as CPUTimeTotal,
+((qs.total_worker_time/1000)/qs.execution_count) as CPUTimeAvg,
+(qs.total_elapsed_time/1000) as DurationTimeTotal,
+((qs.total_elapsed_time/1000)/qs.execution_count) as DurationTimeAvg,
+qs.total_physical_reads as PhysicalReadsTotal,
+(qs.total_physical_reads/qs.execution_count) as PhysicalReadsAvg,
+qs.total_logical_reads as LogicalReadsTotal,
+(qs.total_logical_reads/qs.execution_count) as LogicalReadsAvg,
+qs.last_execution_time as LastExecutionTime
+from sys.dm_exec_query_stats qs
+cross apply sys.dm_exec_sql_text(sql_handle) st
+cross apply sys.dm_exec_query_plan(plan_handle) qp
+cross apply sys.dm_exec_plan_attributes(qs.plan_handle) pa
+where attribute = 'dbid' 
+--order by CPUTimeTotal desc
+--order by CPUTimeAvg desc
+--order by DurationTimeTotal desc
+order by DurationTimeAvg desc
+--order by PhysicalReadsTotal desc
+--order by PhysicalReadsAvg desc
+--order by LogicalReadsTotal desc
+--order by LogicalReadsAvg desc

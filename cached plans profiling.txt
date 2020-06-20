@@ -1,0 +1,47 @@
+Profiling the Plan Cache
+
+
+
+DECLARE  @sumOfCacheEntries FLOAT = ( SELECT COUNT(*) FROM sys.dm_exec_cached_plans )
+SELECT  objtype, 
+   ROUND((CAST(COUNT(*) AS FLOAT) / @sumOfCacheEntries) * 100,2) [pc_In_Cache]
+FROM  sys.dm_exec_cached_plans p 
+GROUP BY objtype 
+ORDER BY 2
+
+
+=======================
+Look closely at the percentage of 'adhoc' plans in the cache. 
+
+
+
+DECLARE @singleUse FLOAT, @multiUse FLOAT, @total FLOAT
+SET @singleUse = ( SELECT COUNT(*) 
+     FROM sys.dm_exec_cached_plans 
+     WHERE cacheobjtype = 'Compiled Plan' 
+     AND usecounts = 1)
+SET @multiUse =  ( SELECT COUNT(*) 
+     FROM sys.dm_exec_cached_plans 
+     WHERE cacheobjtype = 'Compiled Plan' 
+     AND usecounts > 1)
+SET @total = @singleUse + @multiUse
+SELECT 'Single Usecount', ROUND((@singleUse / @total) * 100,2) [pc_single_usecount]
+UNION ALL
+SELECT 'Multiple Usecount', ROUND((@multiUse / @total) * 100,2) 
+
+
+====================================
+
+we can CROSS APPLY with sys.dm_exec_sql_text to fetch the SQL text being executed 
+
+
+
+SELECT TOP 10 t.[text] 
+FROM sys.dm_exec_cached_plans p
+CROSS APPLY sys.dm_exec_sql_text(p.plan_handle) t
+WHERE usecounts = 1
+AND  cacheobjtype = 'Compiled Plan'
+AND  objtype = 'Adhoc'
+AND  t.[text] NOT LIKE '%SELECT%TOP%10%t%text%'
+
+

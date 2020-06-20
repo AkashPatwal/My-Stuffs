@@ -1,0 +1,47 @@
+
+We have checked table size around 3734539 rows, In order to fix this issue we can try to rebuild the index otherwise we need to check other options.
+ 
+ 
+ALTER INDEX [DocStreams_CI] ON  [Marsh_Content_ESP3].[dbo].[DocStreams] REBUILD
+ 
+ 
+OR
+ 
+Option 1:
+ 
+USE Marsh_Content_ESP3
+GO
+DBCC checktable ('DocStreams',REPAIR_REBUILD)
+GO
+DBCC checktable ('DocStreams')
+GO
+ 
+--If the above failed, then Option 2
+ 
+Option 2:
+ 
+USE master
+GO
+ALTER DATABASE Marsh_Content_ESP3 SET SINGLE_USER
+GO
+DBCC CHECKDB('Marsh_Content_ESP3', REPAIR_REBUILD)
+GO
+ALTER Marsh_Content_ESP3 SET MULTI_USER
+GO
+USE Marsh_Content_ESP3
+GO
+DBCC checktable ('DocStreams',REPAIR_REBUILD)
+GO
+DBCC checktable ('DocStreams')
+GO
+ 
+--If the above options failed then Option 3
+ 
+Option 3:
+ 
+USE Marsh_Content_ESP3
+GO
+DBCC checktable ('DocStreams', REPAIR_ALLOW_DATA_LOSS)
+GO
+DBCC checktable ('DocStreams')
+GO

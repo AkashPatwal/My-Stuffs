@@ -1,0 +1,13 @@
+
+Declare @sqlver varchar(50)
+set @sqlver= convert( varchar , SERVERPROPERTY('productversion')) 
+
+Select SERVERPROPERTY ('Computernamephysicalnetbios') as Hostname, DEFAULT_DOMAIN() DomainName,
+
+case cast ( SERVERPROPERTY ('isclustered') as int) when 1 then 'Yes' else  'No' end   ClusteredServer , @@SERVERNAME ServerName, SERVERPROPERTY ('InstanceName') InstanceName , Case when  @sqlver like '10.50%' then 'SQL2008 R2' when @sqlver like '10.0%' then 'SQL2008' 
+when @sqlver like '11.0%' then 'SQL2012' when @sqlver like '9.0%' then 'SQL2005'  when @sqlver like '12.0%' then 'SQL2014'
+end as SQLVersion
+,SERVERPROPERTY ('edition') Edition,SERVERPROPERTY('productversion') ProductVersion, SERVERPROPERTY ('productlevel') ServicePack
+
+ 
+ 

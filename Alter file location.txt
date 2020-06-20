@@ -1,0 +1,9 @@
+SELECT 'ALTER DATABASE [' + DB.name + ']
+MODIFY FILE
+(NAME = [' + MF.name + '],
+FILENAME = ''' + MF.physical_name +
+''')'
+FROM sys.master_files MF
+JOIN sys.databases DB ON DB.database_id = MF.database_id
+WHERE MF.database_id > 4
+ORDER BY DB.name

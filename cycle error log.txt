@@ -1,0 +1,13 @@
+Text
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+create procedure sys.sp_cycle_errorlog  --- 1997/06/24
+as
+if (not (is_srvrolemember('sysadmin') = 1))  -- Make sure that it is the SA executing this.
+        begin
+                raiserror(15247,-1,-1)
+                return(1)
+        end
+
+dbcc errorlog
+return (0)
+

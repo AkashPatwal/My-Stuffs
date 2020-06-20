@@ -1,0 +1,89 @@
+DECLARE @Fileid INT, @chunkSize INT
+
+DECLARE @flSize DECIMAL(18,2), @spFree DECIMAL(18,2), @ActSize INT, @bufSpace INT
+
+DECLARE @flName VARCHAR(100), @SQLstr VARCHAR(1000)
+
+DECLARE @logicalfilename VARCHAR(100)
+
+ 
+
+-- sp_helpfile
+
+set @logicalfilename = 'ICL_Data'
+
+ 
+
+SET @chunkSize = 500   -- No of MB to be shrunk in chunks.
+
+SELECT * from sysfiles
+
+DECLARE cur_SHRINK CURSOR FOR
+
+      SELECT  Fileid, Name,
+
+                  CAST((SIZE * 8 / 1024.0) AS DECIMAL(18,2)) AS FILESIZE,
+
+              CAST((SIZE * 8 / 1024.0) - (FILEPROPERTY(Name,'SpaceUsed')/ 128.0) AS DECIMAL(15,2)) SPACEFREE
+
+      FROM    SYSFILES
+
+      WHERE name = @logicalfilename
+
+OPEN cur_SHRINK
+
+--
+
+FETCH NEXT FROM cur_SHRINK
+
+INTO @Fileid, @flName, @flSize, @spFree
+
+ 
+
+WHILE @@FETCH_STATUS = 0
+
+BEGIN
+
+      SET @ActSize = @flSize
+
+      SET @bufSpace = @flSize - @spFree + ((@flSize - @spFree)* 0.10)
+
+ 
+
+      PRINT RTRIM(@flName) + '...'
+
+      WHILE @ActSize > @bufSpace
+
+      BEGIN
+
+            SET @ActSize = @ActSize - @chunkSize
+
+            IF @ActSize < @bufSpace
+
+                  SET @ActSize = @bufSpace
+
+            SET @SQLstr = 'DBCC SHRINKFILE(' + CAST(@Fileid AS VARCHAR) + ','  + CAST(@ActSize AS VARCHAR) + ')'
+
+            PRINT @SQLstr
+
+            --Print 'Database is shrinked '+@chunkSize
+
+            EXEC(@SQLstr)
+
+      END
+
+ 
+
+FETCH NEXT FROM cur_SHRINK
+
+INTO @Fileid, @flName, @flSize, @spFree
+
+END
+
+ 
+
+CLOSE cur_SHRINK
+
+DEALLOCATE cur_SHRINK
+
+ 

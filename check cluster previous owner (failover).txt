@@ -1,0 +1,3 @@
+sp_readerrorlog 1,1,"netbios"
+
+--this will check in the archived log 1

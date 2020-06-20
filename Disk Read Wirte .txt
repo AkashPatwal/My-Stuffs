@@ -1,0 +1,50 @@
+Note: Mount points will make getting the drive letter less effective. If you are using mount points then just ignore the drive letter column.
+
+SELECT a.io_stall, a.io_stall_read_ms, a.io_stall_write_ms, a.num_of_reads, 
+a.num_of_writes, 
+--a.sample_ms, a.num_of_bytes_read, a.num_of_bytes_written, a.io_stall_write_ms, 
+( ( a.size_on_disk_bytes / 1024 ) / 1024.0 ) AS size_on_disk_mb, 
+db_name(a.database_id) AS dbname, 
+b.name, a.file_id, 
+db_file_type = CASE 
+                   WHEN a.file_id = 2 THEN 'Log' 
+                   ELSE 'Data' 
+                   END, 
+UPPER(SUBSTRING(b.physical_name, 1, 2)) AS disk_location 
+FROM sys.dm_io_virtual_file_stats (NULL, NULL) a 
+JOIN sys.master_files b ON a.file_id = b.file_id 
+AND a.database_id = b.database_id 
+ORDER BY a.io_stall DESC
+
+For those looking at disk issues, I have pasted the general guidance on the avg. reads/sec and avg. writes/sec values for perfmon. By using the script above and the guidance here on perfmon, you should be able to take the next steps in addressing disk performance issues with your customers.
+
+I/O Bottlenecks
+
+SQL Server performance depends heavily on the I/O subsystem. Unless your database fits into physical memory, SQL Server constantly brings database pages in and out of the buffer pool. This generates substantial I/O traffic. Similarly, the log records need to be flushed to the disk before a transaction can be declared committed. And finally, SQL Server uses TempDB for various purposes such as to store intermediate results, to sort, to keep row versions and so on. So a good I/O subsystem is critical to the performance of SQL Server.
+
+Access to log files is sequential except when a transaction needs to be rolled back while access to data files, including TempDB, is randomly accessed. So as a general rule, you should have log files on a separate physical disk than data files for better performance. The focus of this paper is not how to configure your I/O devices but to describe ways to identify if you have I/O bottleneck. Once an I/O bottleneck is identified, you may need to reconfigure your I/O subsystem. 
+If you have a slow I/O subsystem, your users may experience performance problems such as slow response times, and tasks that abort due to timeouts. 
+You can use the following performance counters to identify I/O bottlenecks. Note, these AVG values tend to be skewed (to the low side) if you have an infrequent collection interval. For example, it is hard to tell the nature of an I/O spike with 60-second snapshots. Also, you should not rely on one counter to determine a bottleneck; look for multiple counters to cross check the validity of your findings.
+
+Physical Disk Object: Avg. Disk Queue Length represents the average number of physical read and write requests that were queued on the selected physical disk during the sampling period. If your I/O system is overloaded, more read/write operations will be waiting. If your disk queue length frequently exceeds a value of 2 during peak usage of SQL Server, then you might have an I/O bottleneck.
+Avg. Disk Sec/Read is the average time, in seconds, of a read of data from the disk. Any number:
+Less than 10 ms - very good
+Between 10 - 20 ms - okay
+Between 20 - 50 ms - slow, needs attention
+Greater than 50 ms - Serious I/O bottleneck
+Avg. Disk Sec/Write is the average time, in seconds, of a write of data to the disk. Please refer to the guideline in the previous bullet.
+Physical Disk: %Disk Time is the percentage of elapsed time that the selected disk drive was busy servicing read or write requests. A general guideline is that if this value is greater than 50 percent, it represents an I/O bottleneck.
+Avg. Disk Reads/Sec is the rate of read operations on the disk. You need to make sure that this number is less than 85 percent of the disk capacity. The disk access time increases exponentially beyond 85 percent capacity.
+Avg. Disk Writes/Sec is the rate of write operations on the disk. Make sure that this number is less than 85 percent of the disk capacity. The disk access time increases exponentially beyond 85 percent capacity.
+When using above counters, you may need to adjust the values for RAID configurations using the following formulas.
+
+Raid 0 -- I/Os per disk = (reads + writes) / number of disks
+Raid 1 -- I/Os per disk = [reads + (2 * writes)] / 2
+Raid 5 -- I/Os per disk = [reads + (4 * writes)] / number of disks
+Raid 10 -- I/Os per disk = [reads + (2 * writes)] / number of disks
+For example, you have a RAID-1 system with two physical disks with the following values of the counters.
+
+Disk Reads/sec -  80
+Disk Writes/sec - 70
+Avg. Disk Queue Length - 5
+In that case, you are encountering (80 + (2 * 70))/2 = 110 I/Os per disk and your disk queue length = 5/2 = 2.5 which indicates a border line I/O bottleneck."

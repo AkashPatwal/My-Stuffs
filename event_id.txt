@@ -1,0 +1,7 @@
+1074        System Restart        
+6008        System reboot        
+1076        System Shutdown        
+7035        SQL agent        
+7036   
+102 --in application tab  SQL agent stopped
+17162 ---start  

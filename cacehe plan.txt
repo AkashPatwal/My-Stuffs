@@ -1,0 +1,15 @@
+Select text,a.*from sys.dm_exec_cached_plans a cross apply sys.dm_exec_sql_text(plan_handle)  order by size_in_bytes desc
+Go
+ 
+Select p.plan_handle,CONVERT (varchar, GETDATE(), 126) AS runtime, LEFT (p.cacheobjtype + ' (' + p.objtype + ')', 35) AS cacheobjtype
+,p.usecounts, p.size_in_bytes / 1024 AS size_in_kb, stat.total_worker_time/1000 AS tot_cpu_ms,
+stat.total_elapsed_time/1000 AS tot_duration_ms, stat.total_physical_reads, stat.total_logical_writes, stat.total_logical_reads,
+LEFT (CASE WHEN pa.value=32767 THEN 'ResourceDb' ELSE ISNULL (DB_NAME (CONVERT (sysname, pa.value)),
+CONVERT (sysname,pa.value))END, 40) AS dbname,sql.objectid, CONVERT (nvarchar(50),
+CASE WHEN sql.objectid IS NULL THEN NULL ELSE REPLACE (REPLACE (sql.[text],CHAR(13), ' '), CHAR(10), '')END) AS procname,
+REPLACE (REPLACE (SUBSTRING (sql.[text], stat.statement_start_offset/2 + 1, CASE WHEN stat.statement_end_offset = -1
+THEN LEN (CONVERT(nvarchar(max), sql.[text]))
+ELSE stat.statement_end_offset/2 - stat.statement_start_offset/2 + 1 END), CHAR(13), ' '), CHAR(10), ' ') AS stmt_text
+FROM sys.dm_exec_cached_plans p OUTER APPLY sys.dm_exec_plan_attributes (p.plan_handle) pa INNER JOIN sys.dm_exec_query_stats stat
+ON p.plan_handle = stat.plan_handle OUTER APPLY sys.dm_exec_sql_text (p.plan_handle) AS sql
+WHERE pa.attribute = 'dbid' ORDER BY p.plan_handle DESC

@@ -1,0 +1,24 @@
+
+
+use master
+go
+
+IF OBJECT_ID('tempdb.dbo.##filestats') IS NOT NULL DROP TABLE ##filestats 
+CREATE TABLE ##filestats(Fileid numeric,FileGroup numeric,TotalSpace numeric,UsedSpace numeric,FreeSpace numeric,Name varchar(100),FileName varchar(100))
+Exec sp_MSforeachDB 
+@command1 = 'Use [?];Insert ##filestats (Fileid, FileGroup, TotalSpace,UsedSpace, Name, FileName) exec (''DBCC SHOWFILESTATS WITH TABLERESULTS'')'
+UPDATE ##filestats set totalspace = totalspace*64/1024, usedspace =usedspace*64/1024
+UPDATE ##filestats set freespace = totalspace - usedspace
+SELECT 
+db_name(dbid) AS DBNAME 
+,Spaceinperc = (fs.freespace*100/fs.totalspace)
+,fs.TotalSpace AS TotalSpaceinMB
+,fs.UsedSpace AS UsedSpaceinMB
+,fs.FreeSpace AS FreeSpaceinMB
+,fs.Filename
+,fs.name AS FileGroup
+FROM ##filestats fs
+JOIN sysaltfiles sf
+ON fs.filename=sf.filename
+where db_name(dbid) = 'QDCLogging_BI'  --- change database name for particular database or comment where clause for all databases.
+order by fs.FreeSpace

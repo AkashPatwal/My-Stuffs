@@ -1,0 +1,13 @@
+with x as   (select  *,rn = row_number()
+            over(PARTITION BY OrderNo,item  order by OrderNo)
+            from    #temp1)
+
+select * from x
+where rn > 1 
+
+
+
+SELECT leadid, COUNT(leadid) 
+FROM merch_loc
+GROUP BY leadid
+HAVING COUNT(leadid) > 1 

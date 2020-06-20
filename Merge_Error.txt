@@ -1,0 +1,17 @@
+-- find the duplicate values by adding group by and having 
+
+
+select [S].[SQLInstanceName]
+, [S].[JobName]
+,[S].[JobID]
+, [S].[Occurence]
+,[S].[Frequency], count(*) from #Temptable as S
+group by [S].[SQLInstanceName]
+,[S].[JobName]
+,[S].[JobID]
+, [S].[Occurence]
+,[S].[Frequency]
+having count(*) > 1
+select * from #Temptable where [SQLInstanceName] = 'HQDBR01'
+and JobName = '3741F5DF-B3B2-4519-9D73-E815908FD41E'
+and jobid = 'E10BE130-F72F-4E49-9658-9B27F4451EFB'

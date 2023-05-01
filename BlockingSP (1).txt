@@ -1,0 +1,478 @@
+USE [DBATOOLS]
+GO
+
+/****** Object:  StoredProcedure [dbo].[usp_WB_Blocking_monitor_v1]    Script Date: 04/06/2022 16:14:26 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+CREATE PROC [dbo].[usp_WB_Blocking_monitor_v1]
+	@sSubject				varchar(100)
+,	@blockingthreshold		int = 120
+,	@dbmail_profile_name	varchar(200)
+,	@dbmail_recipients		varchar(1000)
+,	@smartTable				bit = 1
+,	@logtoTable				bit = 0
+,	@WhoISActivethreshold		int = 25
+AS
+BEGIN
+
+	SET NOCOUNT ON
+	
+	Declare @retry int =0  
+Retry:  
+
+	IF OBJECT_ID('tempdb..#blockings') IS NOT NULL
+	BEGIN
+		Drop table #blockings
+	END
+	
+	declare @sbody				varchar(max)
+	declare @rowcount bigint 
+
+	SELECT [Blocked_SPid] = session_Id
+		, sp.blocked
+		, [Blocked_Database] = DB_NAME(sp.dbid)
+		, [Blocked_User] = sp.loginame
+		, [Blocked_Status] = er.status
+		, [Blocked_Wait] = wait_type
+		, [Blocked_Individual Query] = SUBSTRING (qt.text, 
+						case	when sp.stmt_start > 0 then sp.stmt_start/2 else 1 end,
+						(CASE	WHEN sp.stmt_end = -1
+									THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2
+								WHEN sp.stmt_end = 0 then 4000
+						ELSE sp.stmt_end END - sp.stmt_start)/2+1)
+		, [Blocked_Parent Query] = SUBSTRING(qt.text, 1, 1000)
+		, [Blocked_Program] = Cast(sp.program_name as varchar(1000))
+		, [Blocked_Hostname] = sp.Hostname 
+		, [Blocked_start_time] =  start_time
+		, [Blocked_WaitTime] = sp.waittime/1000
+		, [Blocked_login_time] =sp.login_time 
+		, [Blocked_last_batch] =sp.last_batch 
+		, [Blocked_CPU] =sp.cpu 
+		, [Blocked_Physical_IO] =sp.physical_io
+		, [Blocked_MemUsage] =sp.memusage 
+
+		, [CaptureTime] = getdate()
+		,convert(nvarchar(60),null) [blocked_resource_type]
+		,convert(int,null) [Resource_database_id]
+		,convert(sysname,null) [Resource_database] 
+		,convert(bigint,null) [Resource_associated_entity_id]
+		,convert(sysname,null) [objectname]
+		,convert(nvarchar(120),null) [blocked_request_mode] 
+		,convert(bigint,null) [Object_Id]
+		,convert(bigint,null) [Partition_Id]
+
+		, Blk.*
+		INTO #blockings
+		FROM sys.sysprocesses (NOLOCK) sp
+		left JOIN sys.dm_exec_requests (NOLOCK) er ON er.session_id = sp.spid
+		left JOIN
+			(
+				Select [Blocking_Spid] = spid
+					, [Blocking_Database] = DB_NAME(sp.dbid)
+					, [Blocking_User] = sp.loginame
+					, [Blocking_Status] = sp.status
+					, [Blocking_Wait] = er.wait_type
+					, [Blocking_Individual Query] = SUBSTRING (qt.text, 
+						case	when sp.stmt_start > 0 then sp.stmt_start/2 else 1 end,
+						(CASE	WHEN sp.stmt_end = -1
+									THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2
+								WHEN sp.stmt_end = 0 then 4000
+						ELSE sp.stmt_end END - sp.stmt_start)/2)
+					, [Blocking_Parent Query] = SUBSTRING(qt.text, 1, 2000)
+					, [Blocking_Program] = Cast(sp.program_name as varchar(1000))
+					, [Blocking_Hostname] = sp.Hostname
+					, [Blocking_Domain] = sp.nt_domain
+					, [Blocking_login_time] =sp.login_time 
+					, [Blocking_last_batch] =sp.last_batch 
+					, [Blocking_CPU] =sp.cpu 
+					, [Blocking_Physical_IO] =sp.physical_io
+					, [Blocking_MemUsage] =sp.memusage 
+		,convert(nvarchar(60),null) [blocking_resource_type]
+		
+		,convert(nvarchar(120),null) [blocking_request_mode] 
+
+
+				from sys.sysprocesses (NOLOCK) sp
+				left JOIN sys.dm_exec_requests (NOLOCK) er ON sp.spid = er.session_id
+				CROSS APPLY sys.dm_exec_sql_text(sp.sql_handle) as qt
+				WHERE spid > 50              -- Ignore system spids.
+					AND spid NOT IN (@@SPID)
+			) Blk on blk.Blocking_Spid = sp.blocked
+		CROSS APPLY sys.dm_exec_sql_text(er.sql_handle) as qt
+		WHERE session_Id > 50              -- Ignore system spids.
+		AND session_Id NOT IN (@@SPID)     -- Ignore this current statement.
+		AND sp.blocked <> 0
+		--AND sp.waittime > (@blockingthreshold *1000)
+		AND sp.waittime > (@WhoISActivethreshold *1000)
+		and DB_NAME(sp.dbid) not like 'c00%'    --- exclude c00* databases
+		and SUBSTRING(qt.text, 1, 1000) not like 'BACKUP DATABASE%'
+		ORDER BY 1, 2
+	    
+		IF NOT (SELECT Count(1) FROM #blockings) > 0
+		BEGIN
+			PRINT 'No blockings found'
+			RETURN
+		END
+		
+		Else 
+			Begin 
+			If @retry < -1 -- no retry 
+				Begin 
+					set @retry =@retry+1
+						Waitfor delay '00:00:35'
+						Goto Retry 
+				End 
+		
+			End 
+
+		-- BEGIN -------------------------------------------------------------------------
+		/*========================Appending job names to Queries========================*/
+		While 1=1
+		Begin
+			Declare @qry nvarchar(1000), @nuid nvarchar(50), @jn varchar(200), @spid int
+		
+			Select top 1 @spid = Blocked_SPid from #blockings where Blocked_SPid > isnull(@spid,0) and Blocked_program like '%SQLAgent%'
+			if @@rowcount<1
+				break
+
+			Select
+			@nuid = Case when Blocked_program like '%SQLAgent%' then  (((Substring(sp.Blocked_program, charindex('0x', sp.Blocked_program), (charindex(':', sp.Blocked_program) - 1) - charindex('0x', sp.Blocked_program))))) else sp.Blocked_program END
+			from #blockings sp where Blocked_spid = @spid
+
+			set @qry = 'Select @jn = name from msdb..sysjobs where job_id = ' + @nuid
+			EXECUTE sp_executesql @qry, N'@jn varchar(100) OUTPUT', @jn=@jn OUTPUT
+
+			update #blockings
+			set Blocked_program = Case when Blocked_program like '%SQLAgent%' then + LTRIM(RTRIM(Blocked_program)) + ' [Name: ' + @jn + ']' else Blocked_program end
+			where Blocked_spid = @spid
+		End
+
+		/*========================Appending job names to Blocking Queries========================*/
+		While 1=1
+		Begin
+			Declare @qry1 nvarchar(1000), @nuid1 nvarchar(50), @jn1 varchar(200), @spid1 int
+		
+			Select top 1 @spid1 = Blocking_spid from #blockings where Blocking_spid > isnull(@spid1,0) and Blocking_program like '%SQLAgent%'
+			if @@rowcount<1
+				break
+
+			Select
+			@nuid1 = Case when Blocking_program like '%SQLAgent%' then  (((Substring(sp.Blocking_program, charindex('0x', sp.Blocking_program), (charindex(':', sp.Blocking_program) - 1) - charindex('0x', sp.Blocking_program))))) else sp.Blocking_program END
+			from #blockings sp where Blocking_spid = @spid1
+
+			set @qry1 = 'Select @jn1 = name from msdb..sysjobs where job_id = ' + @nuid1
+			EXECUTE sp_executesql @qry1, N'@jn1 varchar(100) OUTPUT', @jn1=@jn1 OUTPUT
+
+			update #blockings
+			set Blocking_program = Case when Blocking_program like '%SQLAgent%' then + LTRIM(RTRIM(Blocking_program)) + ' [Name: ' + @jn1 + ']' else Blocking_program end
+			where Blocking_spid = @spid1
+		End
+		------------------------------------------------------------------------- END --
+		
+		--For blocked
+		update bk 
+		set blocked_resource_type = TL.resource_type,
+			resource_database_id = TL.resource_database_id,
+			resource_associated_entity_id = TL.resource_associated_entity_id,
+			blocked_request_mode =TL.request_mode, 		 
+			Resource_database = db_name(TL.resource_database_id),
+			[Object_id] = o.object_id,
+			[Partition_id] = p.Partition_id
+		FROM #blockings bk 
+		INNER JOIN  sys.dm_tran_locks AS TL on bk.Blocked_SPid = tl.request_session_id
+		INNER JOIN sys.dm_os_waiting_tasks AS WT  ON TL.lock_owner_address = WT.resource_address and bk.Blocking_Spid =wt.blocking_session_id
+		LEFT OUTER JOIN sys.objects AS O  ON O.object_id = TL.resource_associated_entity_id
+		LEFT OUTER JOIN sys.partitions AS P  ON P.hobt_id = TL.resource_associated_entity_id
+		
+		--For blocking
+		update bk 
+		set blocking_resource_type = TL.resource_type,
+			blocking_request_mode =TL.request_mode 		 
+			
+		FROM #blockings bk 
+		INNER JOIN  sys.dm_tran_locks AS TL on bk.Blocking_Spid = tl.request_session_id
+		--INNER JOIN sys.dm_os_waiting_tasks AS WT  ON TL.lock_owner_address = WT.resource_address and bk.Blocking_Spid =wt.blocking_session_id
+		--LEFT OUTER JOIN sys.objects AS O  ON O.object_id = TL.resource_associated_entity_id
+		--LEFT OUTER JOIN sys.partitions AS P  ON P.hobt_id = TL.resource_associated_entity_id
+
+		Declare @tSql varchar(1000)
+		Declare @Count int = 0
+		while (select count(*) from #blockings where Resource_database is not null and objectName is null)>0
+		begin
+			set @Count =@Count + 1 
+			if (@Count >10) -- Break in case loop in running longer  
+				break;
+				
+			--select 'update a  set objectname =isnull(b.name,'''') FROM #blockings a left join [' + Resource_database +  '].sys.objects b on a.Resource_associated_entity_id = b.object_id'
+			select @tSql  = case when [Object_id] >0 then 'update a  set objectname =isnull(b.name,'''') FROM #blockings a left join [' + Resource_database +  '].sys.objects b on a.resource_associated_entity_id = b.object_id'
+						   else
+						    'update a  set objectname =isnull(c.name,'''') FROM #blockings a ' +
+							' left join [' + Resource_database +  '].sys.partitions b on a.partition_id = b.partition_id ' +
+							' left join [' + Resource_database +  '].sys.objects c on b.object_id = c.object_id '
+						   end 	
+			from #blockings where Resource_database is not null and objectName is null
+
+			exec(@tSql)
+		end 
+		
+		-------------------------------------------------- Custom Exclusions START --------------------------------------------------
+
+		/*
+		Declare @spidD int, @bspid int 
+		select @spidd=Spid,@bspid=blocked from #blockings where Blocking_Program like '%Name of program%'
+		Delete  from #blockings where blocked =@bspid
+		Delete from #blockings where spid =@spidd
+		*/
+
+			
+		--update #blockings
+		--set blocked = -999 --hijack "blocked" column for use as logical delete indicator
+		--where Blocking_last_batch in (select Blocking_last_batch from [wb_blocking_monitor] )
+		--and Blocked_start_time in (select  Blocked_start_time from [wb_blocking_monitor] )
+		--and Blocking_SPID not in (select Blocked_SPID from #blockings); 
+		
+		
+		--	--------------------
+
+		--select @rowcount = @@rowcount;
+
+		----navigate blocking chain recursively
+		--while @rowcount > 0
+		--begin
+
+		--	update #blockings
+		--	set blocked = -999
+		--	where Blocking_SPID in
+		--		(select Blocked_SPid from #blockings where blocked = -999)
+		--		and blocked <> -999;
+		
+		--	select @rowcount = @@rowcount;
+
+		--end
+
+		--delete flagged records
+		delete #blockings where blocked = -999;
+		
+		-- 
+
+	
+
+		-------------------------------------------------- Custom Exclusions END --------------------------------------------------
+
+
+if exists(select Blocked_WaitTime from #blockings where Blocked_WaitTime > @WhoISActivethreshold)
+begin
+	EXEC dbo.sp_WhoIsActive @get_transaction_info = 1,@get_outer_command = 1,@get_plans = 1,@get_locks=1,@find_block_leaders=1,@destination_table = 'WhoIsActive';                        	
+end
+
+if exists(select Blocked_WaitTime from #blockings where Blocked_WaitTime > @blockingthreshold)
+Begin 
+	IF @smartTable = 0
+		BEGIN
+			--Define headers for HTML report
+			SET @sbody ='<html><body><br><table width="100%" border=1 align="center" cellpadding="1" cellspacing="0">' + 
+						'<tr bgcolor="#B8944D"><TH colspan="23" cellspacing="1"><font face="Segoe UI" size="1">' + @@SERVERNAME + '</font></TH>' +
+						'<tr bgcolor="#9D9DA9">' +
+						'<TH width=2%><font face="Segoe UI" size="1">Spid</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Database</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">User</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Status</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Wait</font></TH>' +
+						'<TH width=20%><font face="Segoe UI" size="1">Individual Query</font></TH>' +
+						'<TH width=20%><font face="Segoe UI" size="1">Parent Query</font></TH>' +
+						'<TH width=10%><font face="Segoe UI" size="1">Program</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Hostname</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">start_time</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">WaitTime_ss</font></TH>' +
+						'<TH width=2%><font face="Segoe UI" size="1">Blocking_Spid</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Blocking_Database</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Blocking_User</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Blocking_Status</font></TH>' +
+						'<TH width=10%><font face="Segoe UI" size="1">Blocking_Wait</font></TH>' +
+						'<TH width=20%><font face="Segoe UI" size="1">Blocking_Individual Query</font></TH>' +
+						'<TH width=20%><font face="Segoe UI" size="1">Blocking_Parent Query</font></TH>' +
+						'<TH width=10%><font face="Segoe UI" size="1">Blocking_Program</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Blocking_Hostname</font></TH>' +
+						'<TH width=5%><font face="Segoe UI" size="1">Blocking_start_time</font></TH>' +
+						'</tr>' + ''
+
+			-- Append column names to HTML
+			SELECT  @sbody =  @sbody +
+			'<tr bgcolor="#FFFFFF">' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast(Blocked_Spid as varchar(4)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL([Blocked_Database],'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL([Blocked_User],'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL([Blocked_Status],'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocked_Wait,'-') + '</font></td>' + 
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocked_Individual Query] as varchar(max)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocked_Parent Query] as varchar(max)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocked_Program,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocked_Hostname,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Convert(varchar, Blocked_start_time, 121),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Convert(varchar(10), Blocked_WaitTime),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast(Blocking_Spid as varchar(4)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_Database,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_User,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_Status,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_Wait,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocking_Individual Query] as varchar(max)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocking_Parent Query] as varchar(max)),'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_Program,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Blocking_Hostname,'-') + '</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Convert(varchar, Blocking_last_batch, 121),'-') + '</font></td>' +
+			'</tr>' + ''
+			FROM #blockings
+		END
+	ELSE	-- @smartTable = 1
+		BEGIN
+			--Define headers for HTML report
+			SET @sbody ='<html><body><br><table width="100%" border=1 align="center" cellpadding="1" cellspacing="0">' + 
+						'<tr bgcolor="#B8944D"><TH colspan="23" cellspacing="1"><font face="Segoe UI" size="1">' + @@SERVERNAME + '</font></TH>' +
+						'<tr bgcolor="#9D9DA9">' +
+						'<TH width=20%><font face="Segoe UI" size="1">Session details</font></TH>' +
+						'<TH width=30%><font face="Segoe UI" size="1">Session Query</font></TH>' +
+						'<TH width=20%><font face="Segoe UI" size="1">Blocking Session details</font></TH>' +
+						'<TH width=30%><font face="Segoe UI" size="1">Blocking Session Query</font></TH>' +
+						'</tr>' + ''
+
+			-- Append column names to HTML
+			SELECT  @sbody =  @sbody +
+			'<tr bgcolor="#FFFFFF">' +
+			-- Details of SPID that is blocked by other SPID
+			'<td><font face="Segoe UI" size="1">' + 
+				'SPID = '		+ ISNULL(Cast(Blocked_Spid as varchar(4)),'-') + '<br>' +
+				'Database = '	+ ISNULL([Blocked_Database],'-') + '<br>' +
+				'User = '		+ ISNULL([Blocked_User],'-') + '<br>' +
+				'Status = '		+ ISNULL([Blocked_Status],'-') + '<br>' +
+				'Wait type = '	+ ISNULL(Blocked_Wait,'-') + '<br>' +
+				'Program = '	+ ISNULL(Blocked_Program,'-') + '<br>' +
+				'Host Name = '	+ ISNULL(Blocked_Hostname,'-') + '<br>' +
+				'Start Time = ' + ISNULL(Convert(varchar, Blocked_start_time, 121),'-') + '<br>' +
+				'Last Batch = ' + ISNULL(Convert(varchar, Blocking_last_batch, 121),'-') + '<br>' +
+				'Wait time = '	+ ISNULL(Convert(varchar(10), Blocked_WaitTime),'-') + '<br>' +
+				'CPU = '	+ ISNULL(Convert(varchar(10), Blocked_CPU),'-') + '<br>' +
+				'Physical IO = '	+ ISNULL(Convert(varchar(10), Blocked_Physical_IO),'-') + '<br>' +
+				'Resource_database = '	+ ISNULL(Convert(varchar(10), Resource_database),'-') + '<br>' +
+				'objectname = '	+ ISNULL(Convert(varchar(10), objectname),'-') + '<br>' +
+				'blocked_request_mode = '	+ ISNULL(Convert(varchar(10), blocked_request_mode),'-') + '<br>' +
+				'Parent Query = '	+ ISNULL(Convert(varchar(500), [Blocked_Parent Query]),'-') + '<br>' +
+
+			'</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocked_Individual Query] as varchar(max)),'-') + '</font></td>' +
+			-- Details of SPID that is blocking the above SPID
+			'<td><font face="Segoe UI" size="1">' + 
+				'SPID = '		+ ISNULL(Cast(Blocking_Spid as varchar(4)),'-') + '<br>' +
+				'Database = '	+ ISNULL(Blocking_Database,'-') + '<br>' +
+				'User = '		+ ISNULL(Blocking_User,'-') + '<br>' +
+				'Status = '		+ ISNULL(Blocking_Status,'-') + '<br>' +
+				'Wait type = '	+ ISNULL(Blocking_Wait,'-') + '<br>' +
+				'Program = '	+ ISNULL(Blocking_Program,'-') + '<br>' +
+				'Host Name = '	+ ISNULL(Blocking_Hostname,'-') + '<br>' +
+				'Start Time = ' + ISNULL(Convert(varchar, Blocking_Login_time, 121),'-') + '<br>' +
+				'Last Batch = ' + ISNULL(Convert(varchar, Blocking_last_batch, 121),'-') + '<br>' +
+				'CPU = '	+ ISNULL(Convert(varchar(10), Blocking_CPU),'-') + '<br>' +
+				'Physical IO = '	+ ISNULL(Convert(varchar(10), Blocking_Physical_IO),'-') + '<br>' +
+				'blocking_request_mode = '	+ ISNULL(Convert(varchar(10), blocking_request_mode),'-') + '<br>' +
+				'Parent Query = ' + ISNULL(Convert(varchar(500), [Blocking_Parent Query]),'-') + '<br>' +
+			'</font></td>' +
+			'<td><font face="Segoe UI" size="1">' + ISNULL(Cast([Blocking_Individual Query] as varchar(max)),'-') + '</font></td>' +
+			'</tr>' + ''
+		FROM #blockings 
+		END
+
+	SET @sbody =  @sbody + '</table><br><br></body></html>'
+
+	Print @sbody
+	EXEC msdb.dbo.sp_send_dbmail
+    @profile_name = @dbmail_profile_name,
+    @recipients = @dbmail_recipients,
+    @subject = @sSubject,
+    @body = @sbody,
+    @body_format = 'html'
+
+	if @logtoTable = 1
+	begin
+		if object_id('master..wb_blocking_monitor') IS NULL
+		begin
+			CREATE TABLE master.[dbo].[wb_blocking_monitor]
+			(
+				[Blocked_Spid] [smallint] NULL,
+				[blocked] [smallint] NOT NULL,
+				[Blocked_Database] [nvarchar](128) NULL,
+				[Blocked_User] [nchar](128) NOT NULL,
+				[Blocked_Status] [nvarchar](30) NULL,
+				[Blocked_Wait] [nvarchar](60) NULL,
+				[Blocked_Individual Query] [nvarchar](max) NULL,
+				[Blocked_Program] [varchar](1000) NULL,
+				[Blocked_Hostname] [nchar](128) NOT NULL,
+				[Blocked_start_time] [datetime] NULL,
+				[Blocked_WaitTime] [bigint] NULL,
+				[Blocked_login_time] [datetime] NULL,
+				[Blocked_last_batch] [datetime] NULL,
+				[Blocked_CPU] [int] NULL,
+				[Blocked_Physical_IO] [Bigint] NULL,
+				[Blocked_MemUsage] [int] NULL,
+				[CaptureTime] [datetime] NULL,
+				[Blocking_Spid] [smallint] NULL,
+				[Blocking_Database] [nvarchar](128) NULL,
+				[Blocking_User] [nchar](128) NULL,
+				[Blocking_Status] [nchar](30) NULL,
+				[Blocking_Wait] [nvarchar](60) NULL,
+				[Blocking_Individual Query] [nvarchar](max) NULL,
+				[Blocking_Program] [varchar](1000) NULL,
+				[Blocking_Hostname] [nchar](128) NULL,
+				[Blocking_start_time] [datetime] NULL,
+				[Blocking_login_time] [datetime] NULL,
+				[Blocking_last_batch] [datetime] NULL,
+				[Blocking_CPU] [int] NULL,
+				[Blocking_Physical_IO] [Bigint] NULL,
+				[Blocking_MemUsage] [int] NULL,
+				[blocked_resource_type] nvarchar(60)	 null,
+				[blocking_resource_type] nvarchar(60)	 null,
+				[Resource_database_id] int NULL,
+				[Resource_database] sysname null,
+				[Resource_associated_entity_id] bigint NULL,
+				[objectname]	sysname  NULL,
+				[blocked_request_mode] nvarchar(120) NULL,
+				[blocking_request_mode] nvarchar(120) NULL
+
+			) ON [PRIMARY]
+
+		end
+
+		INSERT INTO master.[dbo].[wb_blocking_monitor]
+		(Blocked_Spid, blocked, Blocked_Database, Blocked_User, Blocked_Status, Blocked_Wait, [Blocked_Individual Query], Blocked_Program, Blocked_Hostname, Blocked_start_time, Blocked_WaitTime, 
+                         Blocked_login_time, Blocked_last_batch, Blocked_CPU, Blocked_Physical_IO, Blocked_MemUsage, CaptureTime, Blocking_Spid, Blocking_Database, Blocking_User, Blocking_Status, Blocking_Wait, 
+                         [Blocking_Individual Query], Blocking_Program, Blocking_Hostname, Blocking_login_time, Blocking_last_batch, Blocking_CPU, Blocking_Physical_IO, Blocking_MemUsage
+                         ,blocked_resource_type,blocking_resource_type, Resource_database,Resource_database_id, Resource_associated_entity_id, objectname, blocked_request_mode, blocking_request_mode)
+
+
+		SELECT Blocked_Spid, blocked, Blocked_Database, Blocked_User, Blocked_Status, Blocked_Wait, [Blocked_Individual Query], Blocked_Program, Blocked_Hostname, Blocked_start_time, Blocked_WaitTime, 
+                         Blocked_login_time, Blocked_last_batch, Blocked_CPU, Blocked_Physical_IO, Blocked_MemUsage, CaptureTime, Blocking_Spid, Blocking_Database, Blocking_User, Blocking_Status, Blocking_Wait, 
+                         [Blocking_Individual Query], Blocking_Program, Blocking_Hostname, Blocking_login_time, Blocking_last_batch, Blocking_CPU, Blocking_Physical_IO, Blocking_MemUsage
+						,blocked_resource_type,blocking_resource_type, Resource_database,resource_database_id,resource_associated_entity_id,objectname,blocked_request_mode, blocking_request_mode
+		 FROM #blockings bk 
+
+		DELETE FROM master.[dbo].[wb_blocking_monitor]
+		WHERE [CaptureTime] < dateadd(dd, -30, getdate())
+	end
+	End
+ END
+
+
+
+
+
+
+
+GO
+
+
